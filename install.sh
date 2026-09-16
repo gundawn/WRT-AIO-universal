@@ -1,46 +1,138 @@
 #!/bin/sh
 
+# WRT-AIO-universal
+# OpenWrt AIO installer
+# Supports apk and opkg
+
 set -u
+
+# ============================================================
+# Configuration
+# ============================================================
+
+MIN_FLASH_MB=50
 
 AURORA_INSTALL_URL="https://openwrt.eamonxg.fun/install.sh"
 NETSHIFT_INSTALL_URL="https://raw.githubusercontent.com/yandexru45/netshift/refs/heads/main/install.sh"
-SINGBOX_API_URL="https://api.github.com/repos/shtorm-7/sing-box-extended/releases/latest"
+SINGBOX_RELEASE_API="https://api.github.com/repos/shtorm-7/sing-box-extended/releases/latest"
 
-MIN_FLASH_MB=50
+CRON_FILE="/etc/crontabs/root"
+CRON_LINE="0 5 * * * /sbin/reboot"
+
 TMP_DIR="/tmp/wrt-aio"
 
-PACKAGES_UPDATE_STATUS="SKIPPED"
-PACKAGES_STATUS="SKIPPED"
-BASE_RU_STATUS="SKIPPED"
-AURORA_STATUS="SKIPPED"
-SINGBOX_STATUS="SKIPPED"
-NETSHIFT_STATUS="SKIPPED"
-CRON_STATUS="SKIPPED"
+PACKAGES_UPDATE_STATUS="FAIL"
+PACKAGES_STATUS="FAIL"
+BASE_RU_STATUS="FAIL"
+AURORA_STATUS="FAIL"
+SINGBOX_STATUS="FAIL"
+NETSHIFT_STATUS="FAIL"
+CRON_STATUS="FAIL"
+
+FLASH_OK=0
 
 PKG_MANAGER=""
 PKG_ARCH=""
 RELEASE_ARCH=""
-FLASH_OK=0
+PACKAGE_EXT=""
 
 SINGBOX_FILE=""
-SINGBOX_ASSET=""
-SINGBOX_CANDIDATE_VERSION=""
+SINGBOX_RELEASE_VERSION=""
+INSTALLED_SINGBOX_VERSION=""
+INSTALLED_SINGBOX_RELEASE_VERSION=""
+
+# ============================================================
+# Cleanup
+# ============================================================
+
+cleanup() {
+    rm -rf "$TMP_DIR"
+}
+
+trap cleanup EXIT
+
+# ============================================================
+# Output
+# ============================================================
 
 log() {
-    printf '[INFO] %s\n' "$*"
+    printf '[*] %s\n' "$1"
 }
 
 ok() {
-    printf '[ OK ] %s\n' "$*"
+    printf '[+] %s\n' "$1"
 }
 
 warn() {
-    printf '[WARN] %s\n' "$*" >&2
+    printf '[!] %s\n' "$1"
 }
 
-fail() {
-    printf '[FAIL] %s\n' "$*" >&2
+err() {
+    printf '[-] %s\n' "$1" >&2
 }
+
+# ============================================================
+# Basic checks
+# ============================================================
+
+if [ "$(id -u)" -ne 0 ]; then
+    err "Скрипт должен быть запущен от root."
+    exit 1
+fi
+
+mkdir -p "$TMP_DIR" || {
+    err "Не удалось создать $TMP_DIR."
+    exit 1
+}
+
+# ============================================================
+# OpenWrt information
+# ============================================================
+
+if [ -f /etc/openwrt_release ]; then
+    . /etc/openwrt_release
+fi
+
+log "OpenWrt: ${DISTRIB_RELEASE:-unknown}"
+log "Target: ${DISTRIB_TARGET:-unknown}"
+log "Architecture: ${DISTRIB_ARCH:-unknown}"
+
+# ============================================================
+# Package manager detection
+# ============================================================
+
+if command -v apk >/dev/null 2>&1 &&
+    ! command -v apk 2>/dev/null | grep -q '^/opt/bin/'; then
+
+    PKG_MANAGER="apk"
+    PKG_ARCH="$(apk --print-arch 2>/dev/null || true)"
+    PACKAGE_EXT="apk"
+
+elif command -v opkg >/dev/null 2>&1 &&
+    ! command -v opkg 2>/dev/null | grep -q '^/opt/bin/'; then
+
+    PKG_MANAGER="opkg"
+    PKG_ARCH="$(
+        opkg print-architecture 2>/dev/null |
+            awk '$1 == "arch" {arch=$2} END {print arch}' ||
+            true
+    )"
+    PACKAGE_EXT="ipk"
+
+else
+    err "Не удалось определить пакетный менеджер apk/opkg."
+    exit 1
+fi
+
+RELEASE_ARCH="${DISTRIB_ARCH:-$PKG_ARCH}"
+
+log "Package manager: $PKG_MANAGER"
+log "Package architecture: ${PKG_ARCH:-unknown}"
+log "Release architecture: ${RELEASE_ARCH:-unknown}"
+
+# ============================================================
+# Package helpers
+# ============================================================
 
 pkg_installed() {
     package="$1"
@@ -64,27 +156,14 @@ pkg_version() {
 
     case "$PKG_MANAGER" in
         apk)
-            apk info -e "$package" 2>/dev/null |
+            apk info -a "$package" 2>/dev/null |
                 head -n 1 |
-                sed "s/^${package}-//"
+                sed "s/^${package}-//; s/[[:space:]].*$//"
             ;;
         opkg)
             opkg status "$package" 2>/dev/null |
                 sed -n 's/^Version:[[:space:]]*//p' |
                 head -n 1
-            ;;
-    esac
-}
-
-pkg_install() {
-    package="$1"
-
-    case "$PKG_MANAGER" in
-        apk)
-            apk add "$package"
-            ;;
-        opkg)
-            opkg install "$package"
             ;;
         *)
             return 1
@@ -101,43 +180,6 @@ pkg_remove() {
             ;;
         opkg)
             opkg remove "$package"
-            ;;
-        *)
-            return 1
-            ;;
-    esac
-}
-
-pkg_refresh() {
-    case "$PKG_MANAGER" in
-        apk)
-            apk update
-            ;;
-        opkg)
-            opkg update
-            ;;
-        *)
-            return 1
-            ;;
-    esac
-}
-
-pkg_upgrade_all() {
-    case "$PKG_MANAGER" in
-        apk)
-            apk upgrade
-            ;;
-        opkg)
-            UPGRADE_LIST="$(
-                opkg list-upgradable 2>/dev/null |
-                    awk '{print $1}'
-            )"
-
-            if [ -n "$UPGRADE_LIST" ]; then
-                for package in $UPGRADE_LIST; do
-                    opkg upgrade "$package" || return 1
-                done
-            fi
             ;;
         *)
             return 1
@@ -164,6 +206,64 @@ version_is_newer() {
             ;;
     esac
 }
+
+package_needs_update() {
+    package="$1"
+
+    if ! pkg_installed "$package"; then
+        return 0
+    fi
+
+    installed="$(pkg_version "$package")"
+    candidate=""
+
+    case "$PKG_MANAGER" in
+        apk)
+            candidate="$(
+                apk policy "$package" 2>/dev/null |
+                    sed -n 's/^[[:space:]]*\([0-9][^[:space:]:]*\):.*/\1/p' |
+                    head -n 1
+            )"
+            ;;
+        opkg)
+            candidate="$(
+                opkg list-upgradable 2>/dev/null |
+                    awk -v package="$package" '$1 == package {print $3; exit}'
+            )"
+            ;;
+    esac
+
+    [ -n "$candidate" ] || return 1
+
+    version_is_newer "$installed" "$candidate"
+}
+
+pkg_upgrade_all() {
+    case "$PKG_MANAGER" in
+        apk)
+            apk upgrade --available
+            ;;
+        opkg)
+            UPGRADE_LIST="$(
+                opkg list-upgradable 2>/dev/null |
+                    awk '{print $1}'
+            )"
+
+            if [ -n "$UPGRADE_LIST" ]; then
+                for package in $UPGRADE_LIST; do
+                    opkg upgrade "$package" || return 1
+                done
+            fi
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+# ============================================================
+# sing-box-extended version comparison
+# ============================================================
 
 singbox_version_is_newer() {
     installed="$1"
@@ -217,36 +317,9 @@ $candidate_parts
 EOF
 }
 
-package_needs_update() {
-    package="$1"
-
-    if ! pkg_installed "$package"; then
-        return 0
-    fi
-
-    installed="$(pkg_version "$package")"
-    candidate=""
-
-    case "$PKG_MANAGER" in
-        apk)
-            candidate="$(
-                apk policy "$package" 2>/dev/null |
-                    sed -n 's/^[[:space:]]*\([0-9][^[:space:]:]*\):.*/\1/p' |
-                    head -n 1
-            )"
-            ;;
-        opkg)
-            candidate="$(
-                opkg list-upgradable 2>/dev/null |
-                    awk -v package="$package" '$1 == package {print $3; exit}'
-            )"
-            ;;
-    esac
-
-    [ -n "$candidate" ] || return 1
-
-    version_is_newer "$installed" "$candidate"
-}
+# ============================================================
+# Network helpers
+# ============================================================
 
 fetch_file() {
     url="$1"
@@ -284,202 +357,141 @@ fetch_file() {
 
 run_remote_installer() {
     url="$1"
-    output="$TMP_DIR/installer.sh"
+    installer="$TMP_DIR/installer.sh"
 
-    rm -f "$output"
-
-    if ! fetch_file "$url" "$output"; then
+    if ! fetch_file "$url" "$installer"; then
         return 1
     fi
 
-    chmod 700 "$output" || return 1
+    chmod 700 "$installer" || return 1
 
-    sh "$output"
+    sh "$installer"
 }
 
-root_check() {
-    if [ "$(id -u)" -ne 0 ]; then
-        fail "Скрипт должен быть запущен от root."
-        exit 1
-    fi
-}
-
-cleanup() {
-    rm -rf "$TMP_DIR"
-}
-
-root_check
-
-mkdir -p "$TMP_DIR" || {
-    fail "Не удалось создать $TMP_DIR."
-    exit 1
-}
-
-trap cleanup EXIT
-
-if [ -f /etc/openwrt_release ]; then
-    . /etc/openwrt_release
-else
-    fail "Это не похоже на OpenWrt: /etc/openwrt_release отсутствует."
-    exit 1
-fi
-
-log "OpenWrt: ${DISTRIB_DESCRIPTION:-unknown}"
-log "Target: ${DISTRIB_TARGET:-unknown}"
-log "Architecture: ${DISTRIB_ARCH:-unknown}"
-
-if command -v apk >/dev/null 2>&1 &&
-    [ -z "${OPKG_INSTALLED_ROOT:-}" ]; then
-    PKG_MANAGER="apk"
-elif command -v opkg >/dev/null 2>&1; then
-    PKG_MANAGER="opkg"
-else
-    fail "Не найден поддерживаемый пакетный менеджер: apk или opkg."
-    exit 1
-fi
-
-log "Пакетный менеджер: $PKG_MANAGER"
-
-case "$PKG_MANAGER" in
-    apk)
-        PKG_ARCH="$(apk --print-arch 2>/dev/null || true)"
-        ;;
-    opkg)
-        PKG_ARCH="$(
-            opkg print-architecture 2>/dev/null |
-                awk '$1 == "arch" {print $2}' |
-                tail -n 1
-        )"
-        ;;
-esac
-
-[ -n "$PKG_ARCH" ] || PKG_ARCH="${DISTRIB_ARCH:-unknown}"
-RELEASE_ARCH="${DISTRIB_ARCH:-$PKG_ARCH}"
-
-case "$PKG_MANAGER" in
-    apk)
-        PACKAGE_EXT="apk"
-        ;;
-    opkg)
-        PACKAGE_EXT="ipk"
-        ;;
-    *)
-        PACKAGE_EXT=""
-        ;;
-esac
-
-log "Package arch: $PKG_ARCH"
-log "Release arch: $RELEASE_ARCH"
-
-#
-# Package lists
-#
+# ============================================================
+# Package lists and upgrades
+# ============================================================
 
 log "Обновление списков пакетов..."
 
-if pkg_refresh; then
-    PACKAGES_UPDATE_STATUS="OK"
-    ok "Списки пакетов обновлены."
-else
-    PACKAGES_UPDATE_STATUS="FAILED"
-    warn "Не удалось обновить списки пакетов."
-fi
+case "$PKG_MANAGER" in
+    apk)
+        if apk update; then
+            PACKAGES_UPDATE_STATUS="OK"
+            ok "Списки пакетов обновлены."
+        else
+            warn "Не удалось обновить списки пакетов."
+        fi
+        ;;
+    opkg)
+        if opkg update; then
+            PACKAGES_UPDATE_STATUS="OK"
+            ok "Списки пакетов обновлены."
+        else
+            warn "Не удалось обновить списки пакетов."
+        fi
+        ;;
+esac
 
-#
-# Package upgrade
-#
-
-log "Проверка обновлений пакетов..."
+log "Обновление установленных пакетов..."
 
 if pkg_upgrade_all; then
     PACKAGES_STATUS="OK"
-    ok "Обновление пакетов завершено."
+    ok "Пакеты обновлены."
 else
-    PACKAGES_STATUS="FAILED"
-    warn "Обновление пакетов завершилось с ошибкой."
+    warn "При обновлении пакетов произошла ошибка."
 fi
 
-#
+# ============================================================
 # Russian LuCI
-#
+# ============================================================
 
 log "Проверка luci-i18n-base-ru..."
 
-if package_needs_update "luci-i18n-base-ru"; then
-    if pkg_installed "luci-i18n-base-ru"; then
-        log "Доступно обновление luci-i18n-base-ru."
-    else
-        log "Установка luci-i18n-base-ru..."
-    fi
+if ! pkg_installed "luci-i18n-base-ru"; then
+    log "Установка luci-i18n-base-ru..."
 
-    if pkg_install "luci-i18n-base-ru"; then
-        BASE_RU_STATUS="OK"
-        ok "luci-i18n-base-ru установлен/обновлён."
-    else
-        BASE_RU_STATUS="FAILED"
-        warn "Не удалось установить/обновить luci-i18n-base-ru."
-    fi
-elif pkg_installed "luci-i18n-base-ru"; then
-    BASE_RU_STATUS="OK"
-    ok "luci-i18n-base-ru уже актуален."
+    case "$PKG_MANAGER" in
+        apk)
+            if apk add luci-i18n-base-ru; then
+                BASE_RU_STATUS="OK"
+            fi
+            ;;
+        opkg)
+            if opkg install luci-i18n-base-ru; then
+                BASE_RU_STATUS="OK"
+            fi
+            ;;
+    esac
+
+elif package_needs_update "luci-i18n-base-ru"; then
+    log "Обновление luci-i18n-base-ru..."
+
+    case "$PKG_MANAGER" in
+        apk)
+            if apk add --upgrade luci-i18n-base-ru; then
+                BASE_RU_STATUS="OK"
+            fi
+            ;;
+        opkg)
+            if opkg upgrade luci-i18n-base-ru; then
+                BASE_RU_STATUS="OK"
+            fi
+            ;;
+    esac
 else
-    BASE_RU_STATUS="FAILED"
-    warn "Не удалось определить состояние luci-i18n-base-ru."
+    BASE_RU_STATUS="OK"
 fi
 
-#
+if [ "$BASE_RU_STATUS" = "OK" ]; then
+    ok "Русская локализация LuCI установлена/актуальна."
+else
+    warn "Не удалось установить/обновить luci-i18n-base-ru."
+fi
+
+# ============================================================
 # Aurora
-#
+# ============================================================
 
 log "Проверка Aurora..."
 
-AURORA_PACKAGES_OK=1
-AURORA_UPDATE_NEEDED=0
+AURORA_PACKAGES="
+luci-theme-aurora
+luci-app-aurora-config
+luci-i18n-aurora-config-ru
+"
 
-for package in \
-    luci-theme-aurora \
-    luci-app-aurora-config \
-    luci-i18n-aurora-config-ru
-do
+AURORA_NEEDS_UPDATE=0
+
+for package in $AURORA_PACKAGES; do
     if ! pkg_installed "$package"; then
-        AURORA_PACKAGES_OK=0
-        AURORA_UPDATE_NEEDED=1
-        log "Не установлен пакет Aurora: $package"
-    elif package_needs_update "$package"; then
-        AURORA_UPDATE_NEEDED=1
-        log "Доступно обновление Aurora: $package"
+        AURORA_NEEDS_UPDATE=1
+        break
+    fi
+
+    if package_needs_update "$package"; then
+        AURORA_NEEDS_UPDATE=1
+        break
     fi
 done
 
-if [ "$AURORA_PACKAGES_OK" -eq 1 ] &&
-    [ "$AURORA_UPDATE_NEEDED" -eq 0 ]; then
-
+if [ "$AURORA_NEEDS_UPDATE" -eq 0 ]; then
     AURORA_STATUS="OK"
     ok "Aurora уже установлена и актуальна."
-
 else
     log "Установка/обновление Aurora..."
 
     if run_remote_installer "$AURORA_INSTALL_URL"; then
-        if pkg_installed "luci-theme-aurora" &&
-            pkg_installed "luci-app-aurora-config" &&
-            pkg_installed "luci-i18n-aurora-config-ru"; then
-
-            AURORA_STATUS="OK"
-            ok "Aurora установлена/обновлена."
-        else
-            AURORA_STATUS="FAILED"
-            warn "Aurora installer завершился, но не все пакеты установлены."
-        fi
+        AURORA_STATUS="OK"
+        ok "Aurora установлена/обновлена."
     else
-        AURORA_STATUS="FAILED"
-        warn "Не удалось выполнить Aurora installer."
+        warn "Не удалось установить/обновить Aurora."
     fi
 fi
 
-#
+# ============================================================
 # Flash capacity
-#
+# ============================================================
 
 log "Проверка общей ёмкости flash..."
 
@@ -516,95 +528,73 @@ else
     warn "sing-box-extended и NetShift будут пропущены."
 fi
 
-#
+# ============================================================
 # sing-box-extended
-#
+# ============================================================
 
 if [ "$FLASH_OK" -eq 1 ]; then
 
     log "Проверка sing-box-extended..."
 
-    SINGBOX_JSON="$TMP_DIR/singbox-release.json"
+    SINGBOX_JSON="$TMP_DIR/singbox.json"
 
-    if ! fetch_file "$SINGBOX_API_URL" "$SINGBOX_JSON"; then
-        SINGBOX_STATUS="FAILED"
+    if ! fetch_file "$SINGBOX_RELEASE_API" "$SINGBOX_JSON"; then
         warn "Не удалось получить информацию о последнем релизе sing-box-extended."
     else
-        SINGBOX_ASSET="$(
+        SINGBOX_URL="$(
             grep -o '"browser_download_url":[[:space:]]*"[^"]*"' "$SINGBOX_JSON" |
                 sed 's/^.*"browser_download_url":[[:space:]]*"//; s/"$//' |
                 grep -E "_openwrt_${RELEASE_ARCH}\.${PACKAGE_EXT}$" |
                 head -n 1
         )"
 
-        if [ -z "$SINGBOX_ASSET" ]; then
-            SINGBOX_STATUS="FAILED"
-            warn "Не найден пакет sing-box-extended для архитектуры ${RELEASE_ARCH}."
+        if [ -z "$SINGBOX_URL" ]; then
+            warn "Не найден пакет sing-box-extended для ${RELEASE_ARCH}.${PACKAGE_EXT}."
         else
-            SINGBOX_FILE="$TMP_DIR/$(basename "$SINGBOX_ASSET")"
+            SINGBOX_FILE="$TMP_DIR/$(basename "$SINGBOX_URL")"
 
-            log "Найден пакет: $(basename "$SINGBOX_ASSET")"
-
-            if ! fetch_file "$SINGBOX_ASSET" "$SINGBOX_FILE"; then
-                SINGBOX_STATUS="FAILED"
+            if ! fetch_file "$SINGBOX_URL" "$SINGBOX_FILE"; then
                 warn "Не удалось скачать sing-box-extended."
             else
-                SINGBOX_CANDIDATE_VERSION=""
+                SINGBOX_RELEASE_VERSION="$(
+                    basename "$SINGBOX_URL" |
+                        sed 's/^sing-box-extended_//; s/_openwrt_.*$//'
+                )"
 
-                case "$PKG_MANAGER" in
-                    apk)
-                        SINGBOX_CANDIDATE_VERSION="$(
-                            tar -xzOf "$SINGBOX_FILE" .PKGINFO 2>/dev/null |
-                                sed -n 's/^pkgver[[:space:]]*=[[:space:]]*//p' |
-                                head -n 1
-                        )
-                        ;;
-                    opkg)
-                        CONTROL_ARCHIVE="$TMP_DIR/control.tar.gz"
+                log "Последняя версия sing-box-extended: $SINGBOX_RELEASE_VERSION"
 
-                        if ar p "$SINGBOX_FILE" control.tar.gz > "$CONTROL_ARCHIVE" 2>/dev/null; then
-                            SINGBOX_CANDIDATE_VERSION="$(
-                                tar -xzOf "$CONTROL_ARCHIVE" ./control 2>/dev/null |
-                                    sed -n 's/^Version:[[:space:]]*//p' |
-                                    head -n 1
-                            )
-                        fi
-                        ;;
-                esac
-
-                if [ -z "$SINGBOX_CANDIDATE_VERSION" ]; then
-                    SINGBOX_STATUS="FAILED"
-                    warn "Не удалось определить версию скачанного sing-box-extended."
-
-                elif pkg_installed "sing-box-extended"; then
+                if pkg_installed "sing-box-extended"; then
 
                     INSTALLED_SINGBOX_VERSION="$(pkg_version "sing-box-extended")"
 
-                    log "Установленная версия: $INSTALLED_SINGBOX_VERSION"
-                    log "Доступная версия: $SINGBOX_CANDIDATE_VERSION"
+                    INSTALLED_SINGBOX_RELEASE_VERSION="$(
+                        printf '%s\n' "$INSTALLED_SINGBOX_VERSION" |
+                            sed 's/-r[0-9][0-9]*$//; s/^\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)\.\([0-9][0-9]*\)\.\([0-9][0-9]*\)\.\([0-9][0-9]*\)$/\1-extended-\2.\3.\4/'
+                    )"
+
+                    log "Установлена версия sing-box-extended: $INSTALLED_SINGBOX_RELEASE_VERSION"
 
                     if singbox_version_is_newer \
-                        "$INSTALLED_SINGBOX_VERSION" \
-                        "$SINGBOX_CANDIDATE_VERSION"; then
+                        "$INSTALLED_SINGBOX_RELEASE_VERSION" \
+                        "$SINGBOX_RELEASE_VERSION"; then
 
                         log "Доступно обновление sing-box-extended."
 
                         case "$PKG_MANAGER" in
                             apk)
-                                if apk add --allow-untrusted "$SINGBOX_FILE"; then
+                                if apk add --allow-untrusted --upgrade "$SINGBOX_FILE"; then
                                     SINGBOX_STATUS="OK"
                                     ok "sing-box-extended обновлён."
                                 else
-                                    SINGBOX_STATUS="FAILED"
                                     warn "Не удалось обновить sing-box-extended."
                                 fi
                                 ;;
                             opkg)
-                                if opkg install "$SINGBOX_FILE"; then
+                                if opkg remove sing-box-extended 2>/dev/null &&
+                                    opkg install "$SINGBOX_FILE"; then
                                     SINGBOX_STATUS="OK"
                                     ok "sing-box-extended обновлён."
                                 else
-                                    SINGBOX_STATUS="FAILED"
                                     warn "Не удалось обновить sing-box-extended."
                                 fi
                                 ;;
@@ -615,7 +605,7 @@ if [ "$FLASH_OK" -eq 1 ]; then
                     fi
 
                 else
-                    log "Установка sing-box-extended..."
+                    log "sing-box-extended не установлен. Выполняется установка..."
 
                     case "$PKG_MANAGER" in
                         apk)
@@ -623,7 +613,6 @@ if [ "$FLASH_OK" -eq 1 ]; then
                                 SINGBOX_STATUS="OK"
                                 ok "sing-box-extended установлен."
                             else
-                                SINGBOX_STATUS="FAILED"
                                 warn "Не удалось установить sing-box-extended."
                             fi
                             ;;
@@ -632,11 +621,28 @@ if [ "$FLASH_OK" -eq 1 ]; then
                                 SINGBOX_STATUS="OK"
                                 ok "sing-box-extended установлен."
                             else
-                                SINGBOX_STATUS="FAILED"
                                 warn "Не удалось установить sing-box-extended."
                             fi
                             ;;
                     esac
+                fi
+
+                # Проверяем именно отдельный пакет sing-box.
+                # Для apk "apk info -e sing-box" нельзя использовать,
+                # поскольку sing-box-extended предоставляет virtual package "sing-box".
+
+                if [ "$PKG_MANAGER" = "apk" ]; then
+                    if apk info --installed 2>/dev/null |
+                        grep -q '^sing-box-[0-9]'; then
+                        warn "Отдельный пакет sing-box также установлен."
+                        warn "Он может конфликтовать с sing-box-extended."
+                    fi
+                elif [ "$PKG_MANAGER" = "opkg" ]; then
+                    if opkg status sing-box 2>/dev/null |
+                        grep -q '^Status:.*installed'; then
+                        warn "Отдельный пакет sing-box также установлен."
+                        warn "Он может конфликтовать с sing-box-extended."
+                    fi
                 fi
             fi
         fi
@@ -644,185 +650,137 @@ if [ "$FLASH_OK" -eq 1 ]; then
 
 else
     SINGBOX_STATUS="SKIPPED"
-    warn "sing-box-extended пропущен из-за недостаточной ёмкости flash."
 fi
 
-#
-# Проверка отдельного пакета sing-box
-#
-
-if [ "$PKG_MANAGER" = "apk" ]; then
-    if apk info -e sing-box >/dev/null 2>&1; then
-        warn "Отдельный пакет sing-box установлен."
-        warn "Он может конфликтовать с sing-box-extended."
-    fi
-else
-    if pkg_installed "sing-box"; then
-        warn "Обычный пакет sing-box также установлен."
-        warn "Он может конфликтовать с sing-box-extended."
-    fi
-fi
-
-#
+# ============================================================
 # NetShift
-#
+# ============================================================
 
 if [ "$FLASH_OK" -eq 1 ]; then
 
-    log "Проверка NetShift..."
+    if [ "$SINGBOX_STATUS" = "OK" ] &&
+        pkg_installed "sing-box-extended"; then
 
-    if ! pkg_installed "sing-box-extended"; then
-        NETSHIFT_STATUS="FAILED"
-        warn "NetShift пропущен: sing-box-extended не установлен."
-    else
-        NETSHIFT_PACKAGES_OK=1
-        NETSHIFT_UPDATE_NEEDED=0
+        log "Проверка NetShift..."
 
-        for package in \
-            netshift \
-            luci-app-netshift \
-            luci-i18n-netshift-ru
-        do
+        NETSHIFT_PACKAGES="
+        netshift
+        luci-app-netshift
+        luci-i18n-netshift-ru
+        "
+
+        NETSHIFT_NEEDS_UPDATE=0
+
+        for package in $NETSHIFT_PACKAGES; do
             if ! pkg_installed "$package"; then
-                NETSHIFT_PACKAGES_OK=0
-                NETSHIFT_UPDATE_NEEDED=1
-                log "Не установлен пакет NetShift: $package"
-            elif package_needs_update "$package"; then
-                NETSHIFT_UPDATE_NEEDED=1
-                log "Доступно обновление NetShift: $package"
+                NETSHIFT_NEEDS_UPDATE=1
+                break
+            fi
+
+            if package_needs_update "$package"; then
+                NETSHIFT_NEEDS_UPDATE=1
+                break
             fi
         done
 
-        if [ "$NETSHIFT_PACKAGES_OK" -eq 1 ] &&
-            [ "$NETSHIFT_UPDATE_NEEDED" -eq 0 ]; then
-
+        if [ "$NETSHIFT_NEEDS_UPDATE" -eq 0 ]; then
             NETSHIFT_STATUS="OK"
             ok "NetShift уже установлен и актуален."
-
         else
             log "Установка/обновление NetShift..."
 
             if run_remote_installer "$NETSHIFT_INSTALL_URL"; then
-                if pkg_installed "netshift" &&
-                    pkg_installed "luci-app-netshift" &&
-                    pkg_installed "luci-i18n-netshift-ru"; then
-
-                    NETSHIFT_STATUS="OK"
-                    ok "NetShift установлен/обновлён."
-                else
-                    NETSHIFT_STATUS="FAILED"
-                    warn "NetShift installer завершился, но не все пакеты установлены."
-                fi
+                NETSHIFT_STATUS="OK"
+                ok "NetShift установлен/обновлён."
             else
-                NETSHIFT_STATUS="FAILED"
-                warn "Не удалось выполнить NetShift installer."
+                warn "Не удалось установить/обновить NetShift."
             fi
         fi
+
+    elif [ "$SINGBOX_STATUS" = "SKIPPED" ]; then
+
+        NETSHIFT_STATUS="SKIPPED"
+        warn "NetShift пропущен: sing-box-extended не обрабатывался."
+
+    else
+
+        NETSHIFT_STATUS="SKIPPED"
+        warn "NetShift пропущен: sing-box-extended не установлен."
+
     fi
 
 else
     NETSHIFT_STATUS="SKIPPED"
-    warn "NetShift пропущен из-за недостаточной ёмкости flash."
 fi
 
-#
-# Daily reboot cron
-#
+# ============================================================
+# Cron
+# ============================================================
 
 log "Проверка cron..."
 
-CRON_FILE="/etc/crontabs/root"
-CRON_LINE="0 5 * * * /sbin/reboot"
+if touch "$CRON_FILE" 2>/dev/null; then
 
-touch "$CRON_FILE" 2>/dev/null || true
-
-if grep -Fqx "$CRON_LINE" "$CRON_FILE" 2>/dev/null; then
-    ok "Ежедневный reboot в 05:00 уже настроен."
-else
-    if printf '%s\n' "$CRON_LINE" >> "$CRON_FILE"; then
-        ok "Добавлен ежедневный reboot в 05:00."
+    if grep -Fqx "$CRON_LINE" "$CRON_FILE" 2>/dev/null; then
+        ok "Ежедневная перезагрузка в 05:00 уже настроена."
     else
-        CRON_STATUS="FAILED"
-        warn "Не удалось изменить $CRON_FILE."
+        if printf '%s\n' "$CRON_LINE" >> "$CRON_FILE"; then
+            ok "Добавлена ежедневная перезагрузка в 05:00."
+        else
+            warn "Не удалось добавить cron-задание."
+        fi
     fi
-fi
 
-if [ "$CRON_STATUS" != "FAILED" ]; then
     if /etc/init.d/cron enable >/dev/null 2>&1 &&
         /etc/init.d/cron restart >/dev/null 2>&1; then
+
         CRON_STATUS="OK"
         ok "Cron включён и перезапущен."
     else
-        CRON_STATUS="FAILED"
         warn "Не удалось включить/перезапустить cron."
     fi
+
+else
+    warn "Не удалось открыть $CRON_FILE."
 fi
 
-#
+# ============================================================
 # Final verification
-#
+# ============================================================
 
-log "Финальная проверка..."
-
-if pkg_installed "luci-i18n-base-ru"; then
-    ok "luci-i18n-base-ru: установлен."
-else
-    warn "luci-i18n-base-ru: отсутствует."
+if [ "$SINGBOX_STATUS" = "OK" ] &&
+    ! pkg_installed "sing-box-extended"; then
+    SINGBOX_STATUS="FAIL"
 fi
 
-if pkg_installed "luci-theme-aurora" &&
-    pkg_installed "luci-app-aurora-config" &&
-    pkg_installed "luci-i18n-aurora-config-ru"; then
-    ok "Aurora: установлена."
-else
-    warn "Aurora: не все компоненты установлены."
+if [ "$NETSHIFT_STATUS" = "OK" ] &&
+    ! pkg_installed "netshift"; then
+    NETSHIFT_STATUS="FAIL"
 fi
 
-if pkg_installed "sing-box-extended"; then
-    ok "sing-box-extended: установлен."
-elif [ "$SINGBOX_STATUS" = "SKIPPED" ]; then
-    warn "sing-box-extended: пропущен."
-else
-    warn "sing-box-extended: отсутствует."
-fi
-
-if pkg_installed "netshift" &&
-    pkg_installed "luci-app-netshift" &&
-    pkg_installed "luci-i18n-netshift-ru"; then
-    ok "NetShift: установлен."
-elif [ "$NETSHIFT_STATUS" = "SKIPPED" ]; then
-    warn "NetShift: пропущен."
-else
-    warn "NetShift: не все компоненты установлены."
-fi
-
-if grep -Fqx "$CRON_LINE" "$CRON_FILE" 2>/dev/null; then
-    ok "Cron: reboot в 05:00 настроен."
-else
-    warn "Cron: reboot в 05:00 не найден."
-fi
-
-#
-# Summary
-#
+# ============================================================
+# Final summary
+# ============================================================
 
 printf '\n'
-printf '%s\n' "========================================"
-printf '%s\n' "           WRT-AIO SUMMARY"
-printf '%s\n' "========================================"
-printf 'Package lists:     %s\n' "$PACKAGES_UPDATE_STATUS"
-printf 'Packages:          %s\n' "$PACKAGES_STATUS"
-printf 'Russian LuCI:      %s\n' "$BASE_RU_STATUS"
-printf 'Aurora:            %s\n' "$AURORA_STATUS"
-printf 'sing-box-extended: %s\n' "$SINGBOX_STATUS"
-printf 'NetShift:          %s\n' "$NETSHIFT_STATUS"
-printf 'Cron 05:00 reboot: %s\n' "$CRON_STATUS"
+printf '%s\n' '============================================================'
+printf '%s\n' ' WRT-AIO-universal — итог'
+printf '%s\n' '============================================================'
 
-if [ "$FLASH_OK" -eq 1 ]; then
-    printf 'Flash >= %s MB:    YES\n' "$MIN_FLASH_MB"
-else
-    printf 'Flash >= %s MB:    NO\n' "$MIN_FLASH_MB"
-    printf '%s\n' "sing-box/NetShift: SKIPPED"
+printf 'Package manager update : %s\n' "$PACKAGES_UPDATE_STATUS"
+printf 'Packages               : %s\n' "$PACKAGES_STATUS"
+printf 'LuCI Russian           : %s\n' "$BASE_RU_STATUS"
+printf 'Aurora                 : %s\n' "$AURORA_STATUS"
+printf 'sing-box-extended      : %s\n' "$SINGBOX_STATUS"
+printf 'NetShift               : %s\n' "$NETSHIFT_STATUS"
+printf 'Cron 05:00 reboot      : %s\n' "$CRON_STATUS"
+
+if [ "$FLASH_OK" -eq 0 ]; then
+    printf '\n'
+    warn "sing-box-extended и NetShift пропущены из-за недостаточной flash."
+    warn "Минимальная общая ёмкость: ${MIN_FLASH_MB} MB."
 fi
 
-printf '%s\n' "========================================"
+printf '%s\n' '============================================================'
+
+exit 0
