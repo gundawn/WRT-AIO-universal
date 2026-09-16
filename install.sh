@@ -519,7 +519,8 @@ if [ "$FLASH_OK" -eq 1 ]; then
 
                         case "$PKG_MANAGER" in
                             apk)
-                                if apk add --allow-untrusted --upgrade "$SINGBOX_FILE"; then
+                                if apk del sing-box-extended &&
+                                    apk add --allow-untrusted "$SINGBOX_FILE"; then
                                     SINGBOX_STATUS="OK"
                                     ok "sing-box-extended обновлён"
                                 else
@@ -562,20 +563,6 @@ if [ "$FLASH_OK" -eq 1 ]; then
                             fi
                             ;;
                     esac
-                fi
-
-                if [ "$PKG_MANAGER" = "apk" ]; then
-                    if apk info --installed 2>/dev/null |
-                        grep -q '^sing-box-[0-9]'; then
-                        warn "Стандартный sing-box присутствует в системе!"
-                        warn "Удаление текущей версии, установка extended"
-                    fi
-                elif [ "$PKG_MANAGER" = "opkg" ]; then
-                    if opkg status sing-box 2>/dev/null |
-                        grep -q '^Status:.*installed'; then
-                        warn "Стандартный sing-box присутствует в системе!"
-                        warn "Удаление текущей версии, установка extended"
-                    fi
                 fi
             fi
         fi
