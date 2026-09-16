@@ -1,14 +1,6 @@
 #!/bin/sh
 
-# WRT-AIO-universal
-# OpenWrt AIO installer
-# Supports apk and opkg
-
 set -u
-
-# ============================================================
-# Configuration
-# ============================================================
 
 MIN_FLASH_MB=50
 
@@ -21,13 +13,13 @@ CRON_LINE="0 5 * * * /sbin/reboot"
 
 TMP_DIR="/tmp/wrt-aio"
 
-PACKAGES_UPDATE_STATUS="FAIL"
-PACKAGES_STATUS="FAIL"
-BASE_RU_STATUS="FAIL"
-AURORA_STATUS="FAIL"
-SINGBOX_STATUS="FAIL"
-NETSHIFT_STATUS="FAIL"
-CRON_STATUS="FAIL"
+PACKAGES_UPDATE_STATUS="ОТМЕНА"
+PACKAGES_STATUS="ОТМЕНА"
+BASE_RU_STATUS="ОТМЕНА"
+AURORA_STATUS="ОТМЕНА"
+SINGBOX_STATUS="ОТМЕНА"
+NETSHIFT_STATUS="ОТМЕНА"
+CRON_STATUS="ОТМЕНА"
 
 FLASH_OK=0
 
@@ -41,19 +33,11 @@ SINGBOX_RELEASE_VERSION=""
 INSTALLED_SINGBOX_VERSION=""
 INSTALLED_SINGBOX_RELEASE_VERSION=""
 
-# ============================================================
-# Cleanup
-# ============================================================
-
 cleanup() {
     rm -rf "$TMP_DIR"
 }
 
 trap cleanup EXIT
-
-# ============================================================
-# Output
-# ============================================================
 
 log() {
     printf '[*] %s\n' "$1"
@@ -71,34 +55,22 @@ err() {
     printf '[-] %s\n' "$1" >&2
 }
 
-# ============================================================
-# Basic checks
-# ============================================================
-
 if [ "$(id -u)" -ne 0 ]; then
-    err "Скрипт должен быть запущен от root."
+    err "Скрипт должен быть запущен от root"
     exit 1
 fi
 
 mkdir -p "$TMP_DIR" || {
-    err "Не удалось создать $TMP_DIR."
+    err "Не удалось создать $TMP_DIR!"
     exit 1
 }
-
-# ============================================================
-# OpenWrt information
-# ============================================================
 
 if [ -f /etc/openwrt_release ]; then
     . /etc/openwrt_release
 fi
 
-log "Обнаружен OpenWrt: ${DISTRIB_RELEASE:-unknown}"
+log "Обнаружена версия OpenWRT: ${DISTRIB_RELEASE:-unknown}"
 log "Обнаружена архитектура: ${DISTRIB_ARCH:-unknown}"
-
-# ============================================================
-# Package manager detection
-# ============================================================
 
 if command -v apk >/dev/null 2>&1 &&
     ! command -v apk 2>/dev/null | grep -q '^/opt/bin/'; then
@@ -126,10 +98,6 @@ fi
 RELEASE_ARCH="${DISTRIB_ARCH:-$PKG_ARCH}"
 
 log "Обнаружен менеджер пакетов: $PKG_MANAGER"
-
-# ============================================================
-# Package helpers
-# ============================================================
 
 pkg_installed() {
     package="$1"
@@ -258,10 +226,6 @@ pkg_upgrade_all() {
     esac
 }
 
-# ============================================================
-# sing-box-extended version comparison
-# ============================================================
-
 singbox_version_is_newer() {
     installed="$1"
     candidate="$2"
@@ -314,10 +278,6 @@ $candidate_parts
 EOF
 }
 
-# ============================================================
-# Network helpers
-# ============================================================
-
 fetch_file() {
     url="$1"
     output="$2"
@@ -365,10 +325,6 @@ run_remote_installer() {
     sh "$installer"
 }
 
-# ============================================================
-# Package lists and upgrades
-# ============================================================
-
 log "Обновление списка пакетов"
 
 case "$PKG_MANAGER" in
@@ -398,10 +354,6 @@ if pkg_upgrade_all; then
 else
     warn "Ошибка при обновлении пакетов"
 fi
-
-# ============================================================
-# Russian LuCI
-# ============================================================
 
 log "Проверка наличия русского языка в системе"
 
@@ -446,10 +398,6 @@ else
     warn "Не удалось установить/обновить русскую локализацию"
 fi
 
-# ============================================================
-# Aurora
-# ============================================================
-
 log "Проверка наличия Aurora в системе"
 
 AURORA_PACKAGES="
@@ -486,10 +434,6 @@ else
     fi
 fi
 
-# ============================================================
-# Flash capacity
-# ============================================================
-
 log "Проверка памяти роутера"
 
 OVERLAY_TOTAL_KB="$(
@@ -524,10 +468,6 @@ else
     warn "Не удалось определить общую ёмкость памяти."
     warn "Установка sing-box-extended и NetShift будут пропущены."
 fi
-
-# ============================================================
-# sing-box-extended
-# ============================================================
 
 if [ "$FLASH_OK" -eq 1 ]; then
 
@@ -645,10 +585,6 @@ else
     SINGBOX_STATUS="SKIPPED"
 fi
 
-# ============================================================
-# NetShift
-# ============================================================
-
 if [ "$FLASH_OK" -eq 1 ]; then
 
     if [ "$SINGBOX_STATUS" = "OK" ] &&
@@ -706,10 +642,6 @@ else
     NETSHIFT_STATUS="SKIPPED"
 fi
 
-# ============================================================
-# Cron
-# ============================================================
-
 log "Проверка задачи планировщика на перезагрузку"
 
 if touch "$CRON_FILE" 2>/dev/null; then
@@ -737,10 +669,6 @@ else
     warn "Не удалось открыть $CRON_FILE."
 fi
 
-# ============================================================
-# Final verification
-# ============================================================
-
 if [ "$SINGBOX_STATUS" = "OK" ] &&
     ! pkg_installed "sing-box-extended"; then
     SINGBOX_STATUS="FAIL"
@@ -750,10 +678,6 @@ if [ "$NETSHIFT_STATUS" = "OK" ] &&
     ! pkg_installed "netshift"; then
     NETSHIFT_STATUS="FAIL"
 fi
-
-# ============================================================
-# Final summary
-# ============================================================
 
 printf '\n'
 printf '%s\n' '============================================================'
