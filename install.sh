@@ -422,7 +422,7 @@ done
 
 if [ "$AURORA_NEEDS_UPDATE" -eq 0 ]; then
     AURORA_STATUS="OK"
-    ok "Aurora уже установлена и актуальна"
+    ok "Aurora установлена и актуальна"
 else
     log "Установка/обновление Aurora"
 
