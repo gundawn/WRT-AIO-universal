@@ -262,7 +262,12 @@ package_needs_update() {
 pkg_upgrade_all() {
     case "$PKG_MANAGER" in
         apk)
-            apk upgrade --available
+            if apk upgrade --available >"$TMP_DIR/pkg-upgrade.log" 2>&1; then
+                return 0
+            else
+                cat "$TMP_DIR/pkg-upgrade.log"
+                return 1
+            fi
             ;;
         opkg)
             UPGRADE_LIST="$(
