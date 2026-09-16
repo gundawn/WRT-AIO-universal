@@ -393,7 +393,7 @@ else
 fi
 
 if [ "$BASE_RU_STATUS" = "OK" ]; then
-    ok "Русская локализация установлена/актуальна."
+    ok "Русская локализация установлена/актуальна"
 else
     warn "Не удалось установить/обновить русскую локализацию"
 fi
@@ -422,7 +422,7 @@ done
 
 if [ "$AURORA_NEEDS_UPDATE" -eq 0 ]; then
     AURORA_STATUS="OK"
-    ok "Aurora уже установлена и актуальна."
+    ok "Aurora уже установлена и актуальна"
 else
     log "Установка/обновление Aurora"
 
@@ -681,14 +681,14 @@ fi
 
 printf '\n'
 printf '%s\n' '============================================================'
-printf '%s\n' ' РЕЗУЛЬТАТ УСТАНОВКИ'
+printf '%s\n' ' УСТАНОВКА ЗАВЕРШЕНА!'
 printf '%s\n' '============================================================'
 
 printf 'Поиск обновлений системы     : %s\n' "$PACKAGES_UPDATE_STATUS"
-printf 'Установка обновлений системы : %s\n' "$PACKAGES_STATUS"
+printf 'Установка обновлений         : %s\n' "$PACKAGES_STATUS"
 printf 'Русская локализация          : %s\n' "$BASE_RU_STATUS"
 printf 'Тема Aurora                  : %s\n' "$AURORA_STATUS"
-printf 'sing-box-extended            : %s\n' "$SINGBOX_STATUS"
+printf 'Sing-box-extended            : %s\n' "$SINGBOX_STATUS"
 printf 'NetShift                     : %s\n' "$NETSHIFT_STATUS"
 printf 'Задача в планировщике        : %s\n' "$CRON_STATUS"
 
