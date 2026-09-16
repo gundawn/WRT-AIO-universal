@@ -187,10 +187,20 @@ pkg_remove() {
 pkg_update_lists() {
     case "$PKG_MANAGER" in
         apk)
-            apk update
+            if apk update >"$TMP_DIR/pkg-update.log" 2>&1; then
+                return 0
+            else
+                cat "$TMP_DIR/pkg-update.log"
+                return 1
+            fi
             ;;
         opkg)
-            opkg update
+            if opkg update >"$TMP_DIR/pkg-update.log" 2>&1; then
+                return 0
+            else
+                cat "$TMP_DIR/pkg-update.log"
+                return 1
+            fi
             ;;
         *)
             return 1
