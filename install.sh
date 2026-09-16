@@ -136,6 +136,38 @@ pkg_version() {
     esac
 }
 
+pkg_install() {
+    package="$1"
+
+    case "$PKG_MANAGER" in
+        apk)
+            apk add "$package"
+            ;;
+        opkg)
+            opkg install "$package"
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+pkg_upgrade() {
+    package="$1"
+
+    case "$PKG_MANAGER" in
+        apk)
+            apk add --upgrade "$package"
+            ;;
+        opkg)
+            opkg upgrade "$package"
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
 pkg_remove() {
     package="$1"
 
@@ -145,6 +177,20 @@ pkg_remove() {
             ;;
         opkg)
             opkg remove "$package"
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+pkg_update_lists() {
+    case "$PKG_MANAGER" in
+        apk)
+            apk update
+            ;;
+        opkg)
+            opkg update
             ;;
         *)
             return 1
@@ -327,24 +373,12 @@ run_remote_installer() {
 
 log "Обновление списка пакетов"
 
-case "$PKG_MANAGER" in
-    apk)
-        if apk update; then
-            PACKAGES_UPDATE_STATUS="OK"
-            ok "Списки пакетов обновлены"
-        else
-            warn "Не удалось обновить списки пакетов"
-        fi
-        ;;
-    opkg)
-        if opkg update; then
-            PACKAGES_UPDATE_STATUS="OK"
-            ok "Списки пакетов обновлены"
-        else
-            warn "Не удалось обновить списки пакетов"
-        fi
-        ;;
-esac
+if pkg_update_lists; then
+    PACKAGES_UPDATE_STATUS="OK"
+    ok "Списки пакетов обновлены"
+else
+    warn "Не удалось обновить списки пакетов"
+fi
 
 log "Обновление пакетов"
 
@@ -360,34 +394,16 @@ log "Проверка наличия русского языка в систем
 if ! pkg_installed "luci-i18n-base-ru"; then
     log "Установка русского языка"
 
-    case "$PKG_MANAGER" in
-        apk)
-            if apk add luci-i18n-base-ru; then
-                BASE_RU_STATUS="OK"
-            fi
-            ;;
-        opkg)
-            if opkg install luci-i18n-base-ru; then
-                BASE_RU_STATUS="OK"
-            fi
-            ;;
-    esac
+    if pkg_install "luci-i18n-base-ru"; then
+        BASE_RU_STATUS="OK"
+    fi
 
 elif package_needs_update "luci-i18n-base-ru"; then
     log "Обновление русского языка"
 
-    case "$PKG_MANAGER" in
-        apk)
-            if apk add --upgrade luci-i18n-base-ru; then
-                BASE_RU_STATUS="OK"
-            fi
-            ;;
-        opkg)
-            if opkg upgrade luci-i18n-base-ru; then
-                BASE_RU_STATUS="OK"
-            fi
-            ;;
-    esac
+    if pkg_upgrade "luci-i18n-base-ru"; then
+        BASE_RU_STATUS="OK"
+    fi
 else
     BASE_RU_STATUS="OK"
 fi
