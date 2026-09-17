@@ -527,7 +527,7 @@ if [ "$FLASH_OK" -eq 1 ]; then
                     sed 's/^sing-box-extended_//; s/_openwrt_.*$//'
             )"
 
-            log "Последняя версия sing-box-extended: $SINGBOX_RELEASE_VERSION"
+            log "Последняя версия: $SINGBOX_RELEASE_VERSION"
 
             if pkg_installed "sing-box-extended"; then
 
@@ -538,13 +538,13 @@ if [ "$FLASH_OK" -eq 1 ]; then
                         sed 's/-r[0-9][0-9]*$//; s/^\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)\.\([0-9][0-9]*\)\.\([0-9][0-9]*\)\.\([0-9][0-9]*\)$/\1-extended-\2.\3.\4/'
                 )"
 
-                log "Установлена версия sing-box-extended: $INSTALLED_SINGBOX_RELEASE_VERSION"
+                log "Установлена версия: $INSTALLED_SINGBOX_RELEASE_VERSION"
 
                 if singbox_version_is_newer \
                     "$INSTALLED_SINGBOX_RELEASE_VERSION" \
                     "$SINGBOX_RELEASE_VERSION"; then
 
-                    log "Доступно обновление sing-box-extended"
+                    log "Доступно обновление!"
 
                     case "$PKG_MANAGER" in
                         apk)
@@ -558,16 +558,16 @@ if [ "$FLASH_OK" -eq 1 ]; then
                                         ok "sing-box-extended обновлён"
                                     else
                                         SINGBOX_STATUS="FAIL"
-                                        warn "Не удалось установить новую версию sing-box-extended после удаления старой"
+                                        warn "Не удалось установить новую версию после удаления старой"
                                     fi
                                 else
                                     SINGBOX_STATUS="FAIL"
-                                    warn "Не удалось скачать новую версию sing-box-extended после удаления старой"
+                                    warn "Не удалось скачать новую версию после удаления старой"
                                 fi
 
                             else
                                 SINGBOX_STATUS="FAIL"
-                                warn "Не удалось удалить старую версию sing-box-extended"
+                                warn "Не удалось удалить старую версию"
                             fi
                             ;;
                         opkg)
