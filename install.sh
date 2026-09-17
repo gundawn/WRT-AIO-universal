@@ -605,7 +605,7 @@ if [ "$FLASH_OK" -eq 1 ]; then
     fi
 
 else
-    SINGBOX_STATUS="SKIPPED"
+    SINGBOX_STATUS="ПРОПУСК"
 fi
 
 if [ "$FLASH_OK" -eq 1 ]; then
@@ -649,20 +649,20 @@ if [ "$FLASH_OK" -eq 1 ]; then
             fi
         fi
 
-    elif [ "$SINGBOX_STATUS" = "SKIPPED" ]; then
+    elif [ "$SINGBOX_STATUS" = "ПРОПУСК" ]; then
 
-        NETSHIFT_STATUS="SKIPPED"
+        NETSHIFT_STATUS="ПРОПУСК"
         warn "NetShift пропущен: sing-box-extended не обрабатывался."
 
     else
 
-        NETSHIFT_STATUS="SKIPPED"
+        NETSHIFT_STATUS="ПРОПУСК"
         warn "NetShift пропущен: sing-box-extended не установлен."
 
     fi
 
 else
-    NETSHIFT_STATUS="SKIPPED"
+    NETSHIFT_STATUS="ПРОПУСК"
 fi
 
 log "Проверка задачи планировщика на перезагрузку"
@@ -703,9 +703,7 @@ if [ "$NETSHIFT_STATUS" = "OK" ] &&
 fi
 
 printf '\n'
-printf '%s\n' '======================'
-printf '%s\n' ' УСТАНОВКА ЗАВЕРШЕНА!'
-printf '%s\n' '======================'
+printf '%s\n' 'УСТАНОВКА ЗАВЕРШЕНА!'
 
 printf 'Поиск обновлений системы     : '
 status "$PACKAGES_UPDATE_STATUS"
@@ -734,13 +732,5 @@ printf '\n'
 printf 'Задача в планировщике        : '
 status "$CRON_STATUS"
 printf '\n'
-
-if [ "$FLASH_OK" -eq 0 ]; then
-    printf '\n'
-    warn "sing-box-extended и NetShift пропущены из-за недостатка памяти!"
-    warn "Минимальная общая ёмкость: ${MIN_FLASH_MB} MB."
-fi
-
-printf '%s\n' '===================='
 
 exit 0
