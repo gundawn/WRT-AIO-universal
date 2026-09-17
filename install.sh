@@ -178,22 +178,6 @@ pkg_upgrade() {
     esac
 }
 
-pkg_remove() {
-    package="$1"
-
-    case "$PKG_MANAGER" in
-        apk)
-            apk del "$package"
-            ;;
-        opkg)
-            opkg remove "$package"
-            ;;
-        *)
-            return 1
-            ;;
-    esac
-}
-
 pkg_update_lists() {
     case "$PKG_MANAGER" in
         apk)
@@ -272,7 +256,12 @@ package_needs_update() {
 pkg_upgrade_all() {
     case "$PKG_MANAGER" in
         apk)
-            apk upgrade --available --quiet
+            if apk upgrade --available >"$TMP_DIR/pkg-upgrade.log" 2>&1; then
+                return 0
+            else
+                cat "$TMP_DIR/pkg-upgrade.log"
+                return 1
+            fi
             ;;
         opkg)
             UPGRADE_LIST="$(
@@ -290,6 +279,15 @@ pkg_upgrade_all() {
             return 1
             ;;
     esac
+}
+
+apk_install_local() {
+    package_file="$1"
+
+    [ -f "$package_file" ] || return 1
+    [ -s "$package_file" ] || return 1
+
+    apk add --allow-untrusted "$package_file"
 }
 
 singbox_version_is_newer() {
@@ -524,69 +522,98 @@ if [ "$FLASH_OK" -eq 1 ]; then
         if [ -z "$SINGBOX_URL" ]; then
             warn "Не найден пакет sing-box-extended для ${RELEASE_ARCH}.${PACKAGE_EXT}."
         else
-            SINGBOX_FILE="$TMP_DIR/$(basename "$SINGBOX_URL")"
+            SINGBOX_RELEASE_VERSION="$(
+                basename "$SINGBOX_URL" |
+                    sed 's/^sing-box-extended_//; s/_openwrt_.*$//'
+            )"
 
-            if ! fetch_file "$SINGBOX_URL" "$SINGBOX_FILE"; then
-                warn "Не удалось скачать sing-box-extended"
-            else
-                SINGBOX_RELEASE_VERSION="$(
-                    basename "$SINGBOX_URL" |
-                        sed 's/^sing-box-extended_//; s/_openwrt_.*$//'
+            log "Последняя версия sing-box-extended: $SINGBOX_RELEASE_VERSION"
+
+            if pkg_installed "sing-box-extended"; then
+
+                INSTALLED_SINGBOX_VERSION="$(pkg_version "sing-box-extended")"
+
+                INSTALLED_SINGBOX_RELEASE_VERSION="$(
+                    printf '%s\n' "$INSTALLED_SINGBOX_VERSION" |
+                        sed 's/-r[0-9][0-9]*$//; s/^\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)\.\([0-9][0-9]*\)\.\([0-9][0-9]*\)\.\([0-9][0-9]*\)$/\1-extended-\2.\3.\4/'
                 )"
 
-                log "Последняя версия sing-box-extended: $SINGBOX_RELEASE_VERSION"
+                log "Установлена версия sing-box-extended: $INSTALLED_SINGBOX_RELEASE_VERSION"
 
-                if pkg_installed "sing-box-extended"; then
+                if singbox_version_is_newer \
+                    "$INSTALLED_SINGBOX_RELEASE_VERSION" \
+                    "$SINGBOX_RELEASE_VERSION"; then
 
-                    INSTALLED_SINGBOX_VERSION="$(pkg_version "sing-box-extended")"
-
-                    INSTALLED_SINGBOX_RELEASE_VERSION="$(
-                        printf '%s\n' "$INSTALLED_SINGBOX_VERSION" |
-                            sed 's/-r[0-9][0-9]*$//; s/^\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)\.\([0-9][0-9]*\)\.\([0-9][0-9]*\)\.\([0-9][0-9]*\)$/\1-extended-\2.\3.\4/'
-                    )"
-
-                    log "Установлена версия sing-box-extended: $INSTALLED_SINGBOX_RELEASE_VERSION"
-
-                    if singbox_version_is_newer \
-                        "$INSTALLED_SINGBOX_RELEASE_VERSION" \
-                        "$SINGBOX_RELEASE_VERSION"; then
-
-                        log "Доступно обновление sing-box-extended"
-
-                        case "$PKG_MANAGER" in
-                            apk)
-                                if apk del sing-box-extended &&
-                                    apk add --allow-untrusted "$SINGBOX_FILE"; then
-                                    SINGBOX_STATUS="OK"
-                                    ok "sing-box-extended обновлён"
-                                else
-                                    warn "Не удалось обновить sing-box-extended"
-                                fi
-                                ;;
-                            opkg)
-                                if opkg remove sing-box-extended 2>/dev/null &&
-                                    opkg install "$SINGBOX_FILE"; then
-                                    SINGBOX_STATUS="OK"
-                                    ok "sing-box-extended обновлён"
-                                else
-                                    warn "Не удалось обновить sing-box-extended"
-                                fi
-                                ;;
-                        esac
-                    else
-                        SINGBOX_STATUS="OK"
-                        ok "sing-box-extended актуален"
-                    fi
-
-                else
-                    log "sing-box-extended не установлен. Установка"
+                    log "Доступно обновление sing-box-extended"
 
                     case "$PKG_MANAGER" in
                         apk)
-                            if apk add --allow-untrusted "$SINGBOX_FILE"; then
+                            if apk del sing-box-extended; then
+
+                                SINGBOX_FILE="$TMP_DIR/$(basename "$SINGBOX_URL")"
+
+                                if fetch_file "$SINGBOX_URL" "$SINGBOX_FILE"; then
+                                    if apk_install_local "$SINGBOX_FILE"; then
+                                        SINGBOX_STATUS="OK"
+                                        ok "sing-box-extended обновлён"
+                                    else
+                                        SINGBOX_STATUS="FAIL"
+                                        warn "Не удалось установить новую версию sing-box-extended после удаления старой"
+                                    fi
+                                else
+                                    SINGBOX_STATUS="FAIL"
+                                    warn "Не удалось скачать новую версию sing-box-extended после удаления старой"
+                                fi
+
+                            else
+                                SINGBOX_STATUS="FAIL"
+                                warn "Не удалось удалить старую версию sing-box-extended"
+                            fi
+                            ;;
+                        opkg)
+                            if opkg remove sing-box-extended 2>/dev/null; then
+
+                                SINGBOX_FILE="$TMP_DIR/$(basename "$SINGBOX_URL")"
+
+                                if fetch_file "$SINGBOX_URL" "$SINGBOX_FILE"; then
+                                    if opkg install "$SINGBOX_FILE"; then
+                                        SINGBOX_STATUS="OK"
+                                        ok "sing-box-extended обновлён"
+                                    else
+                                        SINGBOX_STATUS="FAIL"
+                                        warn "Не удалось установить новую версию sing-box-extended после удаления старой"
+                                    fi
+                                else
+                                    SINGBOX_STATUS="FAIL"
+                                    warn "Не удалось скачать новую версию sing-box-extended после удаления старой"
+                                fi
+
+                            else
+                                SINGBOX_STATUS="FAIL"
+                                warn "Не удалось удалить старую версию sing-box-extended"
+                            fi
+                            ;;
+                    esac
+
+                else
+                    SINGBOX_STATUS="OK"
+                    ok "sing-box-extended актуален"
+                fi
+
+            else
+                log "sing-box-extended не установлен. Установка"
+
+                SINGBOX_FILE="$TMP_DIR/$(basename "$SINGBOX_URL")"
+
+                if fetch_file "$SINGBOX_URL" "$SINGBOX_FILE"; then
+
+                    case "$PKG_MANAGER" in
+                        apk)
+                            if apk_install_local "$SINGBOX_FILE"; then
                                 SINGBOX_STATUS="OK"
                                 ok "sing-box-extended установлен"
                             else
+                                SINGBOX_STATUS="FAIL"
                                 warn "Не удалось установить sing-box-extended"
                             fi
                             ;;
@@ -595,10 +622,15 @@ if [ "$FLASH_OK" -eq 1 ]; then
                                 SINGBOX_STATUS="OK"
                                 ok "sing-box-extended установлен"
                             else
+                                SINGBOX_STATUS="FAIL"
                                 warn "Не удалось установить sing-box-extended"
                             fi
                             ;;
                     esac
+
+                else
+                    SINGBOX_STATUS="FAIL"
+                    warn "Не удалось скачать sing-box-extended"
                 fi
             fi
         fi
