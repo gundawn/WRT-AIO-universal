@@ -26,6 +26,10 @@ CRON_LINE="0 5 * * * /sbin/reboot"
 
 PACKAGES_UPDATE_STATUS=PACKAGES_STATUS=BASE_RU_STATUS=AURORA_STATUS=SINGBOX_STATUS=NETSHIFT_STATUS=CRON_STATUS="ОТМЕНА"
 
+RED='\033[31m'
+GREEN='\033[32m'
+RESET='\033[0m'
+
 cleanup() {
     rm -rf "$TMP_DIR"
 }
@@ -37,15 +41,28 @@ log() {
 }
 
 ok() {
-    printf '[+] %s\n' "$1"
+    printf "${GREEN}[+] %s${RESET}\n" "$1"
 }
 
 warn() {
-    printf '[!] %s\n' "$1"
+    printf "${RED}[!] %s${RESET}\n" "$1"
 }
 
 err() {
-    printf '[-] %s\n' "$1" >&2
+    printf "${RED}[-] %s${RESET}\n" "$1" >&2
+}
+
+status() {
+    value="$1"
+
+    case "$value" in
+        OK)
+            printf "${GREEN}%s${RESET}" "$value"
+            ;;
+        *)
+            printf "${RED}%s${RESET}" "$value"
+            ;;
+    esac
 }
 
 if [ "$(id -u)" -ne 0 ]; then
@@ -690,13 +707,33 @@ printf '%s\n' '============================================================'
 printf '%s\n' ' УСТАНОВКА ЗАВЕРШЕНА!'
 printf '%s\n' '============================================================'
 
-printf 'Поиск обновлений системы     : %s\n' "$PACKAGES_UPDATE_STATUS"
-printf 'Установка обновлений         : %s\n' "$PACKAGES_STATUS"
-printf 'Русская локализация          : %s\n' "$BASE_RU_STATUS"
-printf 'Тема Aurora                  : %s\n' "$AURORA_STATUS"
-printf 'Sing-box-extended            : %s\n' "$SINGBOX_STATUS"
-printf 'NetShift                     : %s\n' "$NETSHIFT_STATUS"
-printf 'Задача в планировщике        : %s\n' "$CRON_STATUS"
+printf 'Поиск обновлений системы     : '
+status "$PACKAGES_UPDATE_STATUS"
+printf '\n'
+
+printf 'Установка обновлений         : '
+status "$PACKAGES_STATUS"
+printf '\n'
+
+printf 'Русская локализация          : '
+status "$BASE_RU_STATUS"
+printf '\n'
+
+printf 'Тема Aurora                  : '
+status "$AURORA_STATUS"
+printf '\n'
+
+printf 'Sing-box-extended            : '
+status "$SINGBOX_STATUS"
+printf '\n'
+
+printf 'NetShift                     : '
+status "$NETSHIFT_STATUS"
+printf '\n'
+
+printf 'Задача в планировщике        : '
+status "$CRON_STATUS"
+printf '\n'
 
 if [ "$FLASH_OK" -eq 0 ]; then
     printf '\n'
