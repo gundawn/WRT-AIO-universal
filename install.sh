@@ -2,36 +2,29 @@
 
 set -u
 
-MIN_FLASH_MB=50
-
 AURORA_INSTALL_URL="https://openwrt.eamonxg.fun/install.sh"
 NETSHIFT_INSTALL_URL="https://raw.githubusercontent.com/yandexru45/netshift/refs/heads/main/install.sh"
 SINGBOX_RELEASE_API="https://api.github.com/repos/shtorm-7/sing-box-extended/releases/latest"
 
-CRON_FILE="/etc/crontabs/root"
-CRON_LINE="0 5 * * * /sbin/reboot"
+RELEASE_ARCH=""
+PKG_MANAGER=""
+PACKAGE_EXT=""
+PKG_ARCH=""
 
-TMP_DIR="/tmp/wrt-aio"
-
-PACKAGES_UPDATE_STATUS="ОТМЕНА"
-PACKAGES_STATUS="ОТМЕНА"
-BASE_RU_STATUS="ОТМЕНА"
-AURORA_STATUS="ОТМЕНА"
-SINGBOX_STATUS="ОТМЕНА"
-NETSHIFT_STATUS="ОТМЕНА"
-CRON_STATUS="ОТМЕНА"
-
+MIN_FLASH_MB=50
 FLASH_OK=0
 
-PKG_MANAGER=""
-PKG_ARCH=""
-RELEASE_ARCH=""
-PACKAGE_EXT=""
+TMP_DIR="/tmp/wrt-aio"
 
 SINGBOX_FILE=""
 SINGBOX_RELEASE_VERSION=""
 INSTALLED_SINGBOX_VERSION=""
 INSTALLED_SINGBOX_RELEASE_VERSION=""
+
+CRON_FILE="/etc/crontabs/root"
+CRON_LINE="0 5 * * * /sbin/reboot"
+
+PACKAGES_UPDATE_STATUS=PACKAGES_STATUS=BASE_RU_STATUS=AURORA_STATUS=SINGBOX_STATUS=NETSHIFT_STATUS=CRON_STATUS="ОТМЕНА"
 
 cleanup() {
     rm -rf "$TMP_DIR"
