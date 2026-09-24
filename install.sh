@@ -1,27 +1,31 @@
 #!/bin/sh
-
 set -u
+
+# ============================================================
+# WRT-AIO-universal
+# OpenWrt 25.12+
+# ============================================================
 
 NETSHIFT_INSTALL_URL="https://raw.githubusercontent.com/yandexru45/netshift/refs/heads/main/install.sh"
 
 SINGBOX_RELEASE_TAG="v1.14.0-extended-2.7.1"
 SINGBOX_RELEASE_API="https://api.github.com/repos/shtorm-7/sing-box-extended/releases/tags/${SINGBOX_RELEASE_TAG}"
 
-RELEASE_ARCH=""
+MIN_FLASH_MB=50
+
+TMP_DIR="/tmp/wrt-aio"
+CRON_FILE="/etc/crontabs/root"
+
+CRON_REBOOT_LINE="0 5 * * * /sbin/reboot"
+CRON_AUTO_UPDATE_LINE="* */5 * * * apk update && apk upgrade"
+
 PKG_MANAGER=""
 PACKAGE_EXT=""
 PKG_ARCH=""
+RELEASE_ARCH=""
 
-MIN_FLASH_MB=50
 FLASH_OK=0
-
-TMP_DIR="/tmp/wrt-aio"
-
 SINGBOX_FILE=""
-
-CRON_FILE="/etc/crontabs/root"
-CRON_REBOOT_LINE="0 5 * * * /sbin/reboot"
-CRON_AUTO_UPDATE_LINE="* */5 * * * apk update && apk upgrade"
 
 PACKAGES_UPDATE_STATUS="ОТМЕНА"
 PACKAGES_STATUS="ОТМЕНА"
@@ -33,852 +37,578 @@ NETSHIFT_STATUS="ОТМЕНА"
 CRON_STATUS="ОТМЕНА"
 AUTO_UPDATE_CRON_STATUS="ОТМЕНА"
 
-RED='\033[31m'
-GREEN='\033[32m'
-RESET='\033[0m'
+
+# ============================================================
+# ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
+# ============================================================
 
 cleanup() {
     rm -rf "$TMP_DIR"
 }
 
-trap cleanup EXIT
+trap cleanup EXIT INT TERM
 
-log() {
-    printf '[*] %s\n' "$1"
+msg() {
+    printf '%s\n' "$1"
 }
 
 ok() {
-    printf "${GREEN}[+] %s${RESET}\n" "$1"
+    printf '[ OK ] %s\n' "$1"
 }
 
-warn() {
-    printf "${RED}[!] %s${RESET}\n" "$1"
+fail() {
+    printf '[FAIL] %s\n' "$1"
 }
 
-err() {
-    printf "${RED}[-] %s${RESET}\n" "$1" >&2
+skip() {
+    printf '[ПРОПУСК] %s\n' "$1"
 }
 
-status() {
-    value="$1"
 
-    case "$value" in
-        OK)
-            printf "${GREEN}%s${RESET}" "$value"
-            ;;
-        *)
-            printf "${RED}%s${RESET}" "$value"
-            ;;
-    esac
-}
+# ============================================================
+# ROOT
+# ============================================================
 
-if [ "$(id -u)" -ne 0 ]; then
-    err "Скрипт должен быть запущен от root"
+if [ "$(id -u)" != "0" ]; then
+    echo "Скрипт необходимо запускать от root."
     exit 1
 fi
 
-mkdir -p "$TMP_DIR" || {
-    err "Не удалось создать $TMP_DIR!"
-    exit 1
-}
 
-if [ -f /etc/openwrt_release ]; then
-    . /etc/openwrt_release
-fi
+# ============================================================
+# OPENWRT
+# ============================================================
 
-log "Обнаружена версия OpenWRT: ${DISTRIB_RELEASE:-unknown}"
-log "Обнаружена архитектура: ${DISTRIB_ARCH:-unknown}"
-
-if command -v apk >/dev/null 2>&1 &&
-    ! command -v apk 2>/dev/null | grep -q '^/opt/bin/'; then
-
-    PKG_MANAGER="apk"
-    PKG_ARCH="$(apk --print-arch 2>/dev/null || true)"
-    PACKAGE_EXT="apk"
-
-elif command -v opkg >/dev/null 2>&1 &&
-    ! command -v opkg 2>/dev/null | grep -q '^/opt/bin/'; then
-
-    PKG_MANAGER="opkg"
-    PKG_ARCH="$(
-        opkg print-architecture 2>/dev/null |
-            awk '$1 == "arch" {arch=$2} END {print arch}' ||
-            true
-    )"
-    PACKAGE_EXT="ipk"
-
-else
-    err "Не удалось определить пакетный менеджер apk/opkg."
+if [ ! -f /etc/openwrt_release ]; then
+    echo "Это не OpenWrt."
     exit 1
 fi
 
-RELEASE_ARCH="${DISTRIB_ARCH:-$PKG_ARCH}"
+. /etc/openwrt_release
 
-log "Обнаружен менеджер пакетов: $PKG_MANAGER"
 
-pkg_installed() {
-    package="$1"
+# ============================================================
+# PACKAGE MANAGER
+# Не используем Entware apk/opkg из /opt/bin
+# ============================================================
 
-    case "$PKG_MANAGER" in
-        apk)
-            apk info -e "$package" >/dev/null 2>&1
-            ;;
-        opkg)
-            opkg status "$package" 2>/dev/null |
-                grep -q '^Status:.*installed'
-            ;;
-        *)
-            return 1
-            ;;
-    esac
-}
-
-pkg_version() {
-    package="$1"
-
-    case "$PKG_MANAGER" in
-        apk)
-            apk info -a "$package" 2>/dev/null |
-                head -n 1 |
-                sed "s/^${package}-//; s/[[:space:]].*$//"
-            ;;
-        opkg)
-            opkg status "$package" 2>/dev/null |
-                sed -n 's/^Version:[[:space:]]*//p' |
-                head -n 1
-            ;;
-        *)
-            return 1
-            ;;
-    esac
-}
-
-pkg_install() {
-    package="$1"
-
-    case "$PKG_MANAGER" in
-        apk)
-            apk add "$package"
-            ;;
-        opkg)
-            opkg install "$package"
-            ;;
-        *)
-            return 1
-            ;;
-    esac
-}
-
-pkg_upgrade() {
-    package="$1"
-
-    case "$PKG_MANAGER" in
-        apk)
-            apk add --upgrade "$package"
-            ;;
-        opkg)
-            opkg upgrade "$package"
-            ;;
-        *)
-            return 1
-            ;;
-    esac
-}
-
-pkg_update_lists() {
-    case "$PKG_MANAGER" in
-        apk)
-            if apk update >"$TMP_DIR/pkg-update.log" 2>&1; then
+detect_package_manager() {
+    if command -v apk >/dev/null 2>&1; then
+        case "$(command -v apk)" in
+            /opt/bin/*)
+                ;;
+            *)
+                PKG_MANAGER="apk"
+                PACKAGE_EXT="apk"
                 return 0
-            else
-                cat "$TMP_DIR/pkg-update.log"
-                return 1
-            fi
-            ;;
-        opkg)
-            if opkg update >"$TMP_DIR/pkg-update.log" 2>&1; then
-                return 0
-            else
-                cat "$TMP_DIR/pkg-update.log"
-                return 1
-            fi
-            ;;
-        *)
-            return 1
-            ;;
-    esac
-}
-
-version_is_newer() {
-    installed="$1"
-    candidate="$2"
-
-    [ -n "$installed" ] || return 0
-    [ -n "$candidate" ] || return 1
-
-    case "$PKG_MANAGER" in
-        apk)
-            [ "$(apk version -t "$installed" "$candidate" 2>/dev/null)" = "<" ]
-            ;;
-        opkg)
-            opkg compare-versions "$candidate" ">" "$installed" >/dev/null 2>&1
-            ;;
-        *)
-            return 1
-            ;;
-    esac
-}
-
-package_needs_update() {
-    package="$1"
-
-    if ! pkg_installed "$package"; then
-        return 0
+                ;;
+        esac
     fi
 
-    installed="$(pkg_version "$package")"
-    candidate=""
-
-    case "$PKG_MANAGER" in
-        apk)
-            candidate="$(
-                apk policy "$package" 2>/dev/null |
-                    sed -n 's/^[[:space:]]*\([0-9][^[:space:]:]*\):.*/\1/p' |
-                    head -n 1
-            )"
-            ;;
-        opkg)
-            candidate="$(
-                opkg list-upgradable 2>/dev/null |
-                    awk -v package="$package" '$1 == package {print $3; exit}'
-            )"
-            ;;
-    esac
-
-    [ -n "$candidate" ] || return 1
-
-    version_is_newer "$installed" "$candidate"
-}
-
-pkg_upgrade_all() {
-    case "$PKG_MANAGER" in
-        apk)
-            if apk upgrade --available >"$TMP_DIR/pkg-upgrade.log" 2>&1; then
+    if command -v opkg >/dev/null 2>&1; then
+        case "$(command -v opkg)" in
+            /opt/bin/*)
+                ;;
+            *)
+                PKG_MANAGER="opkg"
+                PACKAGE_EXT="ipk"
                 return 0
-            else
-                cat "$TMP_DIR/pkg-upgrade.log"
-                return 1
-            fi
-            ;;
-        opkg)
-            UPGRADE_LIST="$(
-                opkg list-upgradable 2>/dev/null |
-                    awk '{print $1}'
-            )"
-
-            if [ -n "$UPGRADE_LIST" ]; then
-                for package in $UPGRADE_LIST; do
-                    opkg upgrade "$package" || return 1
-                done
-            fi
-            ;;
-        *)
-            return 1
-            ;;
-    esac
-}
-
-apk_install_local() {
-    package_file="$1"
-
-    [ -f "$package_file" ] || return 1
-    [ -s "$package_file" ] || return 1
-
-    apk add --allow-untrusted "$package_file"
-}
-
-fetch_file() {
-    url="$1"
-    output="$2"
-
-    rm -f "$output"
-
-    if command -v wget >/dev/null 2>&1; then
-        wget -q -O "$output" "$url" 2>/dev/null &&
-            [ -s "$output" ] &&
-            return 0
-
-        rm -f "$output"
-
-        wget -q --no-check-certificate -O "$output" "$url" 2>/dev/null &&
-            [ -s "$output" ] &&
-            return 0
+                ;;
+        esac
     fi
 
-    if command -v curl >/dev/null 2>&1; then
-        curl -fsSL -o "$output" "$url" 2>/dev/null &&
-            [ -s "$output" ] &&
-            return 0
-
-        rm -f "$output"
-
-        curl -kfsSL -o "$output" "$url" 2>/dev/null &&
-            [ -s "$output" ] &&
-            return 0
-    fi
-
-    rm -f "$output"
     return 1
 }
 
-# NetShift получает:
-# 2 = sing-box-extended
-# y = установка русской локализации LuCI
-run_netshift_installer() {
-    installer="$TMP_DIR/netshift-installer.sh"
+if ! detect_package_manager; then
+    echo "Не найден системный apk или opkg."
+    exit 1
+fi
 
-    if ! fetch_file "$NETSHIFT_INSTALL_URL" "$installer"; then
-        return 1
-    fi
+msg "Менеджер пакетов: $PKG_MANAGER"
 
-    chmod 700 "$installer" || return 1
 
-    printf '%s\n' "2" "y" | sh "$installer"
+# ============================================================
+# ARCH
+# ============================================================
+
+detect_arch() {
+    case "$(uname -m)" in
+        aarch64)
+            PKG_ARCH="aarch64"
+            RELEASE_ARCH="aarch64"
+            ;;
+        armv7l|armv7*)
+            PKG_ARCH="armv7"
+            RELEASE_ARCH="armv7"
+            ;;
+        x86_64)
+            PKG_ARCH="x86_64"
+            RELEASE_ARCH="amd64"
+            ;;
+        *)
+            PKG_ARCH="$(uname -m)"
+            RELEASE_ARCH="$(uname -m)"
+            ;;
+    esac
 }
 
-log "Обновление списка пакетов"
+detect_arch
 
-if pkg_update_lists; then
-    PACKAGES_UPDATE_STATUS="OK"
-    ok "Списки пакетов обновлены"
-else
-    warn "Не удалось обновить списки пакетов"
-fi
+mkdir -p "$TMP_DIR"
 
-log "Обновление пакетов"
 
-if pkg_upgrade_all; then
-    PACKAGES_STATUS="OK"
-    ok "Пакеты обновлены"
-else
-    warn "Ошибка при обновлении пакетов"
-fi
+# ============================================================
+# PACKAGE FUNCTIONS
+# ============================================================
 
-log "Проверка наличия русского языка в системе"
-
-if ! pkg_installed "luci-i18n-base-ru"; then
-    log "Установка русского языка"
-
-    if pkg_install "luci-i18n-base-ru"; then
-        BASE_RU_STATUS="OK"
-    fi
-
-elif package_needs_update "luci-i18n-base-ru"; then
-    log "Обновление русского языка"
-
-    if pkg_upgrade "luci-i18n-base-ru"; then
-        BASE_RU_STATUS="OK"
-    fi
-else
-    BASE_RU_STATUS="OK"
-fi
-
-if [ "$BASE_RU_STATUS" = "OK" ]; then
-    ok "Русская локализация установлена/актуальна"
-else
-    warn "Не удалось установить/обновить русскую локализацию"
-fi
-
-log "Настройка часового пояса и времени"
-
-CURRENT_ZONENAME="$(
-    uci -q get system.@system[0].zonename 2>/dev/null || true
-)"
-
-CURRENT_TIMEZONE="$(
-    uci -q get system.@system[0].timezone 2>/dev/null || true
-)"
-
-if [ "$CURRENT_ZONENAME" = "Asia/Yekaterinburg" ] &&
-    [ "$CURRENT_TIMEZONE" = "+05" ]; then
-
-    ok "Часовой пояс уже настроен"
-else
-    if uci set system.@system[0].zonename='Asia/Yekaterinburg' &&
-        uci set system.@system[0].timezone='+05' &&
-        uci commit system; then
-
-        ok "Часовой пояс Asia/Yekaterinburg установлен"
+pkg_update() {
+    if [ "$PKG_MANAGER" = "apk" ]; then
+        apk update
     else
-        warn "Не удалось установить часовой пояс"
+        opkg update
     fi
-fi
+}
 
-VERIFY_ZONENAME="$(
-    uci -q get system.@system[0].zonename 2>/dev/null || true
-)"
-
-VERIFY_TIMEZONE="$(
-    uci -q get system.@system[0].timezone 2>/dev/null || true
-)"
-
-TIME_SYNC_OK=0
-
-if [ -x /etc/init.d/sysntpd ]; then
-    if /etc/init.d/sysntpd enable >/dev/null 2>&1 &&
-        /etc/init.d/sysntpd restart >/dev/null 2>&1; then
-        TIME_SYNC_OK=1
+pkg_upgrade() {
+    if [ "$PKG_MANAGER" = "apk" ]; then
+        apk upgrade
+    else
+        opkg upgrade
     fi
-fi
+}
 
-if [ "$VERIFY_ZONENAME" = "Asia/Yekaterinburg" ] &&
-    [ "$VERIFY_TIMEZONE" = "+05" ] &&
-    [ "$TIME_SYNC_OK" -eq 1 ]; then
+pkg_install_name() {
+    if [ "$PKG_MANAGER" = "apk" ]; then
+        apk add "$@"
+    else
+        opkg install "$@"
+    fi
+}
 
-    TIMEZONE_STATUS="OK"
-    ok "Часовой пояс проверен, служба синхронизации времени запущена"
+pkg_remove() {
+    if [ "$PKG_MANAGER" = "apk" ]; then
+        apk del "$@"
+    else
+        opkg remove "$@"
+    fi
+}
+
+pkg_installed() {
+    pkg="$1"
+
+    if [ "$PKG_MANAGER" = "apk" ]; then
+        apk list --installed 2>/dev/null | grep -q "^${pkg}-"
+    else
+        opkg list-installed 2>/dev/null | grep -q "^${pkg} "
+    fi
+}
+
+
+# ============================================================
+# 1. ОБНОВЛЕНИЕ СПИСКОВ И ПАКЕТОВ
+# ============================================================
+
+msg ""
+msg "============================================================"
+msg "1. ОБНОВЛЕНИЕ ПАКЕТОВ"
+msg "============================================================"
+
+if pkg_update; then
+    PACKAGES_UPDATE_STATUS="OK"
+    ok "Списки пакетов обновлены."
 else
-    warn "Не удалось полностью проверить часовой пояс/синхронизацию времени"
+    PACKAGES_UPDATE_STATUS="ОШИБКА"
+    fail "Не удалось обновить списки пакетов."
 fi
 
-log "Настройка сетевого ускорения"
+if pkg_upgrade; then
+    PACKAGES_STATUS="OK"
+    ok "Пакеты обновлены."
+else
+    PACKAGES_STATUS="ОШИБКА"
+    fail "Не удалось обновить пакеты."
+fi
 
-FLOW_OFFLOADING="$(
-    uci -q get firewall.@defaults[0].flow_offloading 2>/dev/null || true
-)"
 
-FLOW_OFFLOADING_HW="$(
-    uci -q get firewall.@defaults[0].flow_offloading_hw 2>/dev/null || true
-)"
+# ============================================================
+# 2. РУССКАЯ ЛОКАЛИЗАЦИЯ BASE LUCI
+# ============================================================
 
-PACKET_STEERING="$(
-    uci -q get network.globals.packet_steering 2>/dev/null || true
-)"
+msg ""
+msg "============================================================"
+msg "2. РУССКАЯ ЛОКАЛИЗАЦИЯ"
+msg "============================================================"
 
-STEERING_FLOWS="$(
-    uci -q get network.globals.steering_flows 2>/dev/null || true
-)"
+if pkg_install_name luci-i18n-base-ru; then
+    BASE_RU_STATUS="OK"
+    ok "Русская локализация LuCI установлена."
+else
+    BASE_RU_STATUS="ОШИБКА"
+    fail "Не удалось установить luci-i18n-base-ru."
+fi
 
-if [ "$FLOW_OFFLOADING" = "1" ] &&
-    [ "$FLOW_OFFLOADING_HW" = "0" ] &&
-    [ "$PACKET_STEERING" = "2" ] &&
-    [ "$STEERING_FLOWS" = "128" ]; then
+
+# ============================================================
+# 3. ЧАСОВОЙ ПОЯС
+# ============================================================
+
+msg ""
+msg "============================================================"
+msg "3. ЧАСОВОЙ ПОЯС И СИНХРОНИЗАЦИЯ"
+msg "============================================================"
+
+if command -v uci >/dev/null 2>&1; then
+    uci set system.@system[0].zonename='Asia/Yekaterinburg'
+    uci set system.@system[0].timezone='+05'
+    uci commit system
+
+    if [ -x /etc/init.d/sysntpd ]; then
+        /etc/init.d/sysntpd enable >/dev/null 2>&1 || true
+        /etc/init.d/sysntpd restart >/dev/null 2>&1 || \
+            /etc/init.d/sysntpd start >/dev/null 2>&1 || true
+    fi
+
+    CURRENT_ZONE="$(uci get system.@system[0].zonename 2>/dev/null || true)"
+    CURRENT_TZ="$(uci get system.@system[0].timezone 2>/dev/null || true)"
+
+    if [ "$CURRENT_ZONE" = "Asia/Yekaterinburg" ] &&
+       [ "$CURRENT_TZ" = "+05" ]; then
+        TIMEZONE_STATUS="OK"
+        ok "Часовой пояс: Asia/Yekaterinburg (+05)."
+    else
+        TIMEZONE_STATUS="ОШИБКА"
+        fail "Не удалось подтвердить часовой пояс."
+    fi
+else
+    TIMEZONE_STATUS="ОШИБКА"
+    fail "Не найден uci."
+fi
+
+
+# ============================================================
+# 4. СЕТЕВОЕ УСКОРЕНИЕ
+#
+# 1 = Software Flow Offloading
+# 2 = Hardware Flow Offloading
+#
+# НИКАКОГО ТРЕТЬЕГО ВАРИАНТА.
+# НИКАКОГО БЕСКОНЕЧНОГО while.
+# ============================================================
+
+msg ""
+msg "============================================================"
+msg "4. СЕТЕВОЕ УСКОРЕНИЕ"
+msg "============================================================"
+
+CURRENT_FLOW="$(uci get firewall.@defaults[0].flow_offloading 2>/dev/null || true)"
+CURRENT_HW="$(uci get firewall.@defaults[0].flow_offloading_hw 2>/dev/null || true)"
+CURRENT_STEERING="$(uci get network.globals.packet_steering 2>/dev/null || true)"
+CURRENT_FLOWS="$(uci get network.globals.steering_flows 2>/dev/null || true)"
+
+if [ "$CURRENT_HW" = "1" ] &&
+   [ "$CURRENT_FLOW" = "0" ] &&
+   [ "$CURRENT_STEERING" = "2" ] &&
+   [ "$CURRENT_FLOWS" = "128" ]; then
 
     NETWORK_ACCELERATION_STATUS="OK"
-    ok "Software Offloading уже настроен"
+    ok "Аппаратное ускорение уже настроено."
 
-elif [ "$FLOW_OFFLOADING" = "0" ] &&
-    [ "$FLOW_OFFLOADING_HW" = "1" ] &&
-    [ "$PACKET_STEERING" = "2" ] &&
-    [ "$STEERING_FLOWS" = "128" ]; then
+elif [ "$CURRENT_HW" = "0" ] &&
+     [ "$CURRENT_FLOW" = "1" ] &&
+     [ "$CURRENT_STEERING" = "2" ] &&
+     [ "$CURRENT_FLOWS" = "128" ]; then
 
     NETWORK_ACCELERATION_STATUS="OK"
-    ok "Hardware Offloading уже настроен"
+    ok "Программное ускорение уже настроено."
 
 else
-    printf '\n'
+    printf '%s\n' ""
     printf '%s\n' "Выберите сетевое ускорение:"
-    printf '%s\n' "1) Software Flow Offloading"
-    printf '%s\n' "2) Hardware Flow Offloading"
-    printf '%s\n' "3) Пропустить"
+    printf '%s\n' "1) Программное Flow Offloading"
+    printf '%s\n' "2) Аппаратное Flow Offloading"
+    printf 'Ваш выбор [1-2]: '
 
-    OFFLOAD_CHOICE=""
-
-    while :; do
-        printf 'Ваш выбор [1-3]: '
-        read -r OFFLOAD_CHOICE
-
-        case "$OFFLOAD_CHOICE" in
-            1|2|3)
-                break
-                ;;
-            *)
-                printf '%s\n' "Введите 1, 2 или 3."
-                ;;
-        esac
-    done
+    read -r OFFLOAD_CHOICE
 
     case "$OFFLOAD_CHOICE" in
         1)
-            log "Включение Software Flow Offloading"
+            uci set firewall.@defaults[0].flow_offloading='1'
+            uci set firewall.@defaults[0].flow_offloading_hw='0'
+            uci set network.globals.packet_steering='2'
+            uci set network.globals.steering_flows='128'
+            uci commit firewall
+            uci commit network
 
-            if uci set firewall.@defaults[0].flow_offloading='1' &&
-                uci set firewall.@defaults[0].flow_offloading_hw='0' &&
-                uci set network.globals.packet_steering='2' &&
-                uci set network.globals.steering_flows='128' &&
-                uci commit firewall &&
-                uci commit network; then
-
-                if [ -x /etc/init.d/firewall ]; then
-                    /etc/init.d/firewall reload >/dev/null 2>&1 || true
-                fi
-
-                if [ -x /etc/init.d/packet_steering ]; then
-                    /etc/init.d/packet_steering reload >/dev/null 2>&1 || true
-                fi
-
-                FLOW_OFFLOADING="$(
-                    uci -q get firewall.@defaults[0].flow_offloading 2>/dev/null || true
-                )"
-
-                FLOW_OFFLOADING_HW="$(
-                    uci -q get firewall.@defaults[0].flow_offloading_hw 2>/dev/null || true
-                )"
-
-                PACKET_STEERING="$(
-                    uci -q get network.globals.packet_steering 2>/dev/null || true
-                )"
-
-                STEERING_FLOWS="$(
-                    uci -q get network.globals.steering_flows 2>/dev/null || true
-                )"
-
-                if [ "$FLOW_OFFLOADING" = "1" ] &&
-                    [ "$FLOW_OFFLOADING_HW" = "0" ] &&
-                    [ "$PACKET_STEERING" = "2" ] &&
-                    [ "$STEERING_FLOWS" = "128" ]; then
-
-                    NETWORK_ACCELERATION_STATUS="OK"
-                    ok "Software Offloading и Packet Steering настроены"
-                else
-                    warn "Проверка сетевого ускорения не пройдена"
-                fi
+            if \
+                [ "$(uci get firewall.@defaults[0].flow_offloading 2>/dev/null)" = "1" ] &&
+                [ "$(uci get firewall.@defaults[0].flow_offloading_hw 2>/dev/null)" = "0" ] &&
+                [ "$(uci get network.globals.packet_steering 2>/dev/null)" = "2" ] &&
+                [ "$(uci get network.globals.steering_flows 2>/dev/null)" = "128"
+            ]; then
+                NETWORK_ACCELERATION_STATUS="OK"
+                ok "Программное ускорение включено."
             else
-                warn "Не удалось настроить сетевое ускорение"
+                NETWORK_ACCELERATION_STATUS="ОШИБКА"
+                fail "Не удалось подтвердить настройки программного ускорения."
             fi
             ;;
 
         2)
-            log "Включение Hardware Flow Offloading"
+            uci set firewall.@defaults[0].flow_offloading='0'
+            uci set firewall.@defaults[0].flow_offloading_hw='1'
+            uci set network.globals.packet_steering='2'
+            uci set network.globals.steering_flows='128'
+            uci commit firewall
+            uci commit network
 
-            if uci set firewall.@defaults[0].flow_offloading='0' &&
-                uci set firewall.@defaults[0].flow_offloading_hw='1' &&
-                uci set network.globals.packet_steering='2' &&
-                uci set network.globals.steering_flows='128' &&
-                uci commit firewall &&
-                uci commit network; then
-
-                if [ -x /etc/init.d/firewall ]; then
-                    /etc/init.d/firewall reload >/dev/null 2>&1 || true
-                fi
-
-                if [ -x /etc/init.d/packet_steering ]; then
-                    /etc/init.d/packet_steering reload >/dev/null 2>&1 || true
-                fi
-
-                FLOW_OFFLOADING="$(
-                    uci -q get firewall.@defaults[0].flow_offloading 2>/dev/null || true
-                )"
-
-                FLOW_OFFLOADING_HW="$(
-                    uci -q get firewall.@defaults[0].flow_offloading_hw 2>/dev/null || true
-                )"
-
-                PACKET_STEERING="$(
-                    uci -q get network.globals.packet_steering 2>/dev/null || true
-                )"
-
-                STEERING_FLOWS="$(
-                    uci -q get network.globals.steering_flows 2>/dev/null || true
-                )"
-
-                if [ "$FLOW_OFFLOADING" = "0" ] &&
-                    [ "$FLOW_OFFLOADING_HW" = "1" ] &&
-                    [ "$PACKET_STEERING" = "2" ] &&
-                    [ "$STEERING_FLOWS" = "128" ]; then
-
-                    NETWORK_ACCELERATION_STATUS="OK"
-                    ok "Hardware Offloading и Packet Steering настроены"
-                else
-                    warn "Проверка сетевого ускорения не пройдена"
-                fi
+            if \
+                [ "$(uci get firewall.@defaults[0].flow_offloading 2>/dev/null)" = "0" ] &&
+                [ "$(uci get firewall.@defaults[0].flow_offloading_hw 2>/dev/null)" = "1" ] &&
+                [ "$(uci get network.globals.packet_steering 2>/dev/null)" = "2" ] &&
+                [ "$(uci get network.globals.steering_flows 2>/dev/null)" = "128"
+            ]; then
+                NETWORK_ACCELERATION_STATUS="OK"
+                ok "Аппаратное ускорение включено."
             else
-                warn "Не удалось настроить сетевое ускорение"
+                NETWORK_ACCELERATION_STATUS="ОШИБКА"
+                fail "Не удалось подтвердить настройки аппаратного ускорения."
             fi
             ;;
 
-        3)
-            NETWORK_ACCELERATION_STATUS="ПРОПУСК"
-            warn "Сетевое ускорение пропущено"
+        *)
+            NETWORK_ACCELERATION_STATUS="ОШИБКА"
+            fail "Неверный выбор. Допустимы только 1 или 2."
             ;;
     esac
 fi
 
-log "Проверка памяти роутера"
 
-OVERLAY_TOTAL_KB="$(
-    df -k /overlay 2>/dev/null |
-        awk 'NR == 2 {print $2}'
-)"
+# ============================================================
+# 5. ПРОВЕРКА FLASH
+# ============================================================
 
-if [ -z "$OVERLAY_TOTAL_KB" ]; then
-    OVERLAY_TOTAL_KB="$(
-        df -k / 2>/dev/null |
-            awk 'NR == 2 {print $2}'
-    )"
-fi
+msg ""
+msg "============================================================"
+msg "5. ПРОВЕРКА СВОБОДНОГО FLASH"
+msg "============================================================"
 
-if [ -n "$OVERLAY_TOTAL_KB" ] &&
-    [ "$OVERLAY_TOTAL_KB" -gt 0 ] 2>/dev/null; then
+FLASH_AVAILABLE_KB="$(df -k /overlay 2>/dev/null | awk 'NR==2 {print $4}')"
 
-    FLASH_TOTAL_MB=$((OVERLAY_TOTAL_KB / 1024))
+if [ -n "$FLASH_AVAILABLE_KB" ]; then
+    FLASH_AVAILABLE_MB=$((FLASH_AVAILABLE_KB / 1024))
 
-    log "Общая ёмкость памяти: ${FLASH_TOTAL_MB} MB"
+    msg "Свободно в /overlay: ${FLASH_AVAILABLE_MB} MB"
+    msg "Минимальный порог: ${MIN_FLASH_MB} MB"
 
-    if [ "$FLASH_TOTAL_MB" -ge "$MIN_FLASH_MB" ]; then
+    if [ "$FLASH_AVAILABLE_MB" -ge "$MIN_FLASH_MB" ]; then
         FLASH_OK=1
-        ok "Flash-память подходит для установки NetShift"
+        ok "Свободного места достаточно."
     else
         FLASH_OK=0
-        warn "Flash-память меньше минимального порога ${MIN_FLASH_MB} MB!"
-        warn "Установка sing-box-extended и NetShift будут пропущены."
+        skip "Свободного места меньше ${MIN_FLASH_MB} MB."
+        skip "sing-box-extended и NetShift устанавливаться не будут."
     fi
 else
     FLASH_OK=0
-    warn "Не удалось определить общую ёмкость памяти."
-    warn "Установка sing-box-extended и NetShift будут пропущены."
+    skip "Не удалось определить свободное место."
 fi
 
-if [ "$FLASH_OK" -eq 1 ]; then
 
-    log "Проверка наличия sing-box-extended"
+# ============================================================
+# 6. SING-BOX EXTENDED 2.7.1
+# ============================================================
 
-    if pkg_installed "sing-box-extended"; then
+msg ""
+msg "============================================================"
+msg "6. SING-BOX-EXTENDED ${SINGBOX_RELEASE_TAG}"
+msg "============================================================"
 
-        SINGBOX_STATUS="OK"
-        ok "sing-box-extended уже установлен"
-
-    else
-        log "sing-box-extended отсутствует. Установка фиксированной версии 2.7.1"
-
-        SINGBOX_JSON="$TMP_DIR/singbox.json"
-
-        if ! fetch_file "$SINGBOX_RELEASE_API" "$SINGBOX_JSON"; then
-            SINGBOX_STATUS="FAIL"
-            warn "Не удалось получить релиз sing-box-extended 2.7.1"
-        else
-            SINGBOX_URL="$(
-                grep -o '"browser_download_url":[[:space:]]*"[^"]*"' "$SINGBOX_JSON" |
-                    sed 's/^.*"browser_download_url":[[:space:]]*"//; s/"$//' |
-                    grep -E "_openwrt_${RELEASE_ARCH}\.${PACKAGE_EXT}$" |
-                    head -n 1
-            )"
-
-            if [ -z "$SINGBOX_URL" ]; then
-                SINGBOX_STATUS="FAIL"
-                warn "Не найден пакет sing-box-extended 2.7.1 для ${RELEASE_ARCH}.${PACKAGE_EXT}"
-            else
-                SINGBOX_FILE="$TMP_DIR/$(basename "$SINGBOX_URL")"
-
-                log "Найден пакет: $(basename "$SINGBOX_URL")"
-
-                if fetch_file "$SINGBOX_URL" "$SINGBOX_FILE"; then
-
-                    case "$PKG_MANAGER" in
-                        apk)
-                            if apk_install_local "$SINGBOX_FILE"; then
-                                SINGBOX_STATUS="OK"
-                                ok "sing-box-extended 2.7.1 установлен"
-                            else
-                                SINGBOX_STATUS="FAIL"
-                                warn "Не удалось установить sing-box-extended 2.7.1"
-                            fi
-                            ;;
-
-                        opkg)
-                            if opkg install "$SINGBOX_FILE"; then
-                                SINGBOX_STATUS="OK"
-                                ok "sing-box-extended 2.7.1 установлен"
-                            else
-                                SINGBOX_STATUS="FAIL"
-                                warn "Не удалось установить sing-box-extended 2.7.1"
-                            fi
-                            ;;
-                    esac
-
-                else
-                    SINGBOX_STATUS="FAIL"
-                    warn "Не удалось скачать sing-box-extended 2.7.1"
-                fi
-            fi
-        fi
-    fi
-
-else
+if [ "$FLASH_OK" -eq 0 ]; then
     SINGBOX_STATUS="ПРОПУСК"
-fi
+    skip "Недостаточно flash."
+else
+    SINGBOX_JSON="$TMP_DIR/singbox.json"
 
-if [ "$FLASH_OK" -eq 1 ]; then
+    if wget -qO "$SINGBOX_JSON" "$SINGBOX_RELEASE_API"; then
 
-    if [ "$SINGBOX_STATUS" = "OK" ] &&
-        pkg_installed "sing-box-extended"; then
-
-        log "Проверка наличия NetShift"
-
-        NETSHIFT_PACKAGES="
-        netshift
-        luci-app-netshift
-        luci-i18n-netshift-ru
-        "
-
-        NETSHIFT_NEEDS_UPDATE=0
-
-        for package in $NETSHIFT_PACKAGES; do
-            if ! pkg_installed "$package"; then
-                NETSHIFT_NEEDS_UPDATE=1
-                break
-            fi
-
-            if package_needs_update "$package"; then
-                NETSHIFT_NEEDS_UPDATE=1
-                break
-            fi
-        done
-
-        if [ "$NETSHIFT_NEEDS_UPDATE" -eq 0 ]; then
-            NETSHIFT_STATUS="OK"
-            ok "NetShift уже установлен и актуален"
+        if [ "$PKG_MANAGER" = "apk" ]; then
+            SINGBOX_FILE="$(
+                grep -o '"browser_download_url": "[^"]*\.apk"' "$SINGBOX_JSON" |
+                grep -E "$RELEASE_ARCH|aarch64|arm64" |
+                head -n 1 |
+                sed 's/.*"browser_download_url": "//; s/"$//'
+            )"
         else
-            log "Установка/обновление NetShift"
-            log "Автоматический выбор: sing-box-extended + русский язык"
-
-            if run_netshift_installer; then
-                NETSHIFT_STATUS="OK"
-                ok "NetShift установлен/обновлён"
-            else
-                NETSHIFT_STATUS="FAIL"
-                warn "Не удалось установить/обновить NetShift"
-            fi
+            SINGBOX_FILE="$(
+                grep -o '"browser_download_url": "[^"]*\.ipk"' "$SINGBOX_JSON" |
+                grep -E "$RELEASE_ARCH|aarch64|arm64" |
+                head -n 1 |
+                sed 's/.*"browser_download_url": "//; s/"$//'
+            )"
         fi
 
-    elif [ "$SINGBOX_STATUS" = "ПРОПУСК" ]; then
+        if [ -n "$SINGBOX_FILE" ]; then
+            SINGBOX_LOCAL="$TMP_DIR/$(basename "$SINGBOX_FILE")"
 
-        NETSHIFT_STATUS="ПРОПУСК"
-        warn "NetShift пропущен: sing-box-extended не обрабатывался."
+            msg "Скачивание: $(basename "$SINGBOX_FILE")"
 
+            if wget -qO "$SINGBOX_LOCAL" "$SINGBOX_FILE"; then
+
+                # Если уже установлен sing-box-extended — проверяем версию.
+                INSTALLED_SINGBOX=""
+                if command -v sing-box >/dev/null 2>&1; then
+                    INSTALLED_SINGBOX="$(
+                        sing-box version 2>/dev/null |
+                        head -n 1
+                    )"
+                fi
+
+                if echo "$INSTALLED_SINGBOX" | grep -q "1.14.0"; then
+                    ok "sing-box 1.14.0 уже установлен."
+                    SINGBOX_STATUS="OK"
+                else
+                    # Удаляем старый extended перед обновлением.
+                    if pkg_installed sing-box-extended; then
+                        msg "Удаление старого sing-box-extended..."
+                        pkg_remove sing-box-extended >/dev/null 2>&1 || true
+                    fi
+
+                    if [ "$PKG_MANAGER" = "apk" ]; then
+                        if apk add --allow-untrusted "$SINGBOX_LOCAL"; then
+                            SINGBOX_STATUS="OK"
+                            ok "sing-box-extended ${SINGBOX_RELEASE_TAG} установлен."
+                        else
+                            SINGBOX_STATUS="ОШИБКА"
+                            fail "Не удалось установить sing-box-extended."
+                        fi
+                    else
+                        if opkg install --force-downgrade --force-reinstall "$SINGBOX_LOCAL"; then
+                            SINGBOX_STATUS="OK"
+                            ok "sing-box-extended ${SINGBOX_RELEASE_TAG} установлен."
+                        else
+                            SINGBOX_STATUS="ОШИБКА"
+                            fail "Не удалось установить sing-box-extended."
+                        fi
+                    fi
+                fi
+            else
+                SINGBOX_STATUS="ОШИБКА"
+                fail "Не удалось скачать sing-box-extended."
+            fi
+        else
+            SINGBOX_STATUS="ОШИБКА"
+            fail "Не найден подходящий пакет sing-box для ${RELEASE_ARCH}."
+        fi
     else
-
-        NETSHIFT_STATUS="ПРОПУСК"
-        warn "NetShift пропущен: sing-box-extended не установлен."
-
+        SINGBOX_STATUS="ОШИБКА"
+        fail "Не удалось получить информацию о релизе sing-box."
     fi
+fi
 
-else
+
+# ============================================================
+# 7. NETSHIFT
+# ============================================================
+
+msg ""
+msg "============================================================"
+msg "7. NETSHIFT"
+msg "============================================================"
+
+if [ "$FLASH_OK" -eq 0 ]; then
     NETSHIFT_STATUS="ПРОПУСК"
-fi
-
-log "Проверка задачи планировщика на перезагрузку"
-
-if touch "$CRON_FILE" 2>/dev/null; then
-
-    if grep -Fqx "$CRON_REBOOT_LINE" "$CRON_FILE" 2>/dev/null; then
-        CRON_STATUS="OK"
-        ok "Ежедневная перезагрузка в 05:00 уже настроена"
-    else
-        if printf '%s\n' "$CRON_REBOOT_LINE" >> "$CRON_FILE"; then
-            CRON_STATUS="OK"
-            ok "Добавлена ежедневная перезагрузка в 05:00"
-        else
-            CRON_STATUS="FAIL"
-            warn "Не удалось добавить задачу перезагрузки"
-        fi
-    fi
-
-    if ! /etc/init.d/cron enable >/dev/null 2>&1 ||
-        ! /etc/init.d/cron restart >/dev/null 2>&1; then
-
-        CRON_STATUS="FAIL"
-        warn "Не удалось включить/перезапустить планировщик"
-    fi
-
+    skip "Недостаточно flash."
 else
-    CRON_STATUS="FAIL"
-    warn "Не удалось открыть $CRON_FILE"
-fi
+    NETSHIFT_INSTALLER="$TMP_DIR/netshift-install.sh"
 
-log "Проверка автоматического обновления пакетов"
+    if wget -qO "$NETSHIFT_INSTALLER" "$NETSHIFT_INSTALL_URL"; then
+        chmod +x "$NETSHIFT_INSTALLER"
 
-if [ "$PKG_MANAGER" = "apk" ]; then
+        msg "Запуск установщика NetShift..."
+        msg "Автоматический выбор: sing-box-extended + русский LuCI."
 
-    if touch "$CRON_FILE" 2>/dev/null; then
-
-        if grep -Fqx "$CRON_AUTO_UPDATE_LINE" "$CRON_FILE" 2>/dev/null; then
-            AUTO_UPDATE_CRON_STATUS="OK"
-            ok "Автоматическое обновление каждые 5 часов уже настроено"
+        # NetShift:
+        # 2 = sing-box-extended
+        # y = русский LuCI
+        #
+        # Все ответы идут через stdin установщика.
+        if printf '%s\n' "2" "y" | sh "$NETSHIFT_INSTALLER"; then
+            NETSHIFT_STATUS="OK"
+            ok "NetShift установлен."
         else
-            if printf '%s\n' "$CRON_AUTO_UPDATE_LINE" >> "$CRON_FILE"; then
-                AUTO_UPDATE_CRON_STATUS="OK"
-                ok "Добавлено автоматическое обновление пакетов каждые 5 часов"
-            else
-                AUTO_UPDATE_CRON_STATUS="FAIL"
-                warn "Не удалось добавить автоматическое обновление пакетов"
-            fi
+            NETSHIFT_STATUS="ОШИБКА"
+            fail "Установщик NetShift завершился с ошибкой."
         fi
-
-        if ! /etc/init.d/cron enable >/dev/null 2>&1 ||
-            ! /etc/init.d/cron restart >/dev/null 2>&1; then
-
-            AUTO_UPDATE_CRON_STATUS="FAIL"
-            warn "Не удалось перезапустить планировщик"
-        fi
-
     else
-        AUTO_UPDATE_CRON_STATUS="FAIL"
-        warn "Не удалось открыть $CRON_FILE"
+        NETSHIFT_STATUS="ОШИБКА"
+        fail "Не удалось скачать установщик NetShift."
     fi
+fi
 
+
+# ============================================================
+# 8. CRON
+# ============================================================
+
+msg ""
+msg "============================================================"
+msg "8. CRON"
+msg "============================================================"
+
+touch "$CRON_FILE"
+
+# Удаляем только наши старые строки перед добавлением.
+sed -i '\|0 5 \* \* \* /sbin/reboot|d' "$CRON_FILE"
+sed -i '\|\* \*/5 \* \* \* apk update && apk upgrade|d' "$CRON_FILE"
+
+printf '%s\n' "$CRON_REBOOT_LINE" >> "$CRON_FILE"
+printf '%s\n' "$CRON_AUTO_UPDATE_LINE" >> "$CRON_FILE"
+
+if grep -Fqx "$CRON_REBOOT_LINE" "$CRON_FILE" &&
+   grep -Fqx "$CRON_AUTO_UPDATE_LINE" "$CRON_FILE"; then
+
+    CRON_STATUS="OK"
+    AUTO_UPDATE_CRON_STATUS="OK"
+
+    ok "Ежедневная перезагрузка: $CRON_REBOOT_LINE"
+    ok "Автообновление: $CRON_AUTO_UPDATE_LINE"
 else
-    AUTO_UPDATE_CRON_STATUS="ПРОПУСК"
-    warn "Автообновление через apk пропущено: используется $PKG_MANAGER"
+    CRON_STATUS="ОШИБКА"
+    AUTO_UPDATE_CRON_STATUS="ОШИБКА"
+
+    fail "Не удалось проверить cron."
 fi
 
-if [ "$SINGBOX_STATUS" = "OK" ] &&
-    ! pkg_installed "sing-box-extended"; then
-    SINGBOX_STATUS="FAIL"
+if [ -x /etc/init.d/cron ]; then
+    /etc/init.d/cron enable >/dev/null 2>&1 || true
+    /etc/init.d/cron restart >/dev/null 2>&1 || \
+        /etc/init.d/cron start >/dev/null 2>&1 || true
 fi
 
-if [ "$NETSHIFT_STATUS" = "OK" ] &&
-    ! pkg_installed "netshift"; then
-    NETSHIFT_STATUS="FAIL"
-fi
 
-printf '\n'
-printf '%s\n' 'УСТАНОВКА ЗАВЕРШЕНА!'
+# ============================================================
+# ФИНАЛЬНАЯ ПРОВЕРКА
+# ============================================================
 
-printf 'Поиск обновлений системы     : '
-status "$PACKAGES_UPDATE_STATUS"
-printf '\n'
+msg ""
+msg "============================================================"
+msg "УСТАНОВКА ЗАВЕРШЕНА!"
+msg "============================================================"
 
-printf 'Установка обновлений         : '
-status "$PACKAGES_STATUS"
-printf '\n'
+printf '%-30s %s\n' "Обновление списков:" "$PACKAGES_UPDATE_STATUS"
+printf '%-30s %s\n' "Обновление пакетов:" "$PACKAGES_STATUS"
+printf '%-30s %s\n' "Русская локализация:" "$BASE_RU_STATUS"
+printf '%-30s %s\n' "Часовой пояс:" "$TIMEZONE_STATUS"
+printf '%-30s %s\n' "Сетевое ускорение:" "$NETWORK_ACCELERATION_STATUS"
+printf '%-30s %s\n' "sing-box-extended:" "$SINGBOX_STATUS"
+printf '%-30s %s\n' "NetShift:" "$NETSHIFT_STATUS"
+printf '%-30s %s\n' "Cron перезагрузка:" "$CRON_STATUS"
+printf '%-30s %s\n' "Cron автообновление:" "$AUTO_UPDATE_CRON_STATUS"
 
-printf 'Русская локализация          : '
-status "$BASE_RU_STATUS"
-printf '\n'
-
-printf 'Часовой пояс и время         : '
-status "$TIMEZONE_STATUS"
-printf '\n'
-
-printf 'Сетевое ускорение            : '
-status "$NETWORK_ACCELERATION_STATUS"
-printf '\n'
-
-printf 'Sing-box-extended 2.7.1      : '
-status "$SINGBOX_STATUS"
-printf '\n'
-
-printf 'NetShift                     : '
-status "$NETSHIFT_STATUS"
-printf '\n'
-
-printf 'Перезагрузка в 05:00         : '
-status "$CRON_STATUS"
-printf '\n'
-
-printf 'Автообновление пакетов       : '
-status "$AUTO_UPDATE_CRON_STATUS"
-printf '\n'
+msg ""
+msg "Перезагрузка: 05:00 каждый день."
+msg "Автообновление пакетов: каждые 5 часов (00/05/10/15/20)."
+msg ""
 
 exit 0
