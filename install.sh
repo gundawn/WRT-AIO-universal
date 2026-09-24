@@ -459,21 +459,19 @@ STEERING_FLOWS="$(
     uci -q get network.globals.steering_flows 2>/dev/null || true
 )"
 
-if [ "$FLOW_OFFLOADING" = "1" ] &&
-    [ "$FLOW_OFFLOADING_HW" = "0" ] &&
-    [ "$PACKET_STEERING" = "2" ] &&
-    [ "$STEERING_FLOWS" = "128" ]; then
+OFFLOAD_OK=0
+STEERING_OK=0
+FLOWS_OK=0
 
-    NETWORK_ACCELERATION_STATUS="OK"
-    ok "Software Offloading уже настроен"
+# ─────────────────────────────────────────────
+# OFFLOADING
+# ─────────────────────────────────────────────
 
-elif [ "$FLOW_OFFLOADING" = "0" ] &&
-    [ "$FLOW_OFFLOADING_HW" = "1" ] &&
-    [ "$PACKET_STEERING" = "2" ] &&
-    [ "$STEERING_FLOWS" = "128" ]; then
+if [ "$FLOW_OFFLOADING" = "1" ] ||
+    [ "$FLOW_OFFLOADING_HW" = "1" ]; then
 
-    NETWORK_ACCELERATION_STATUS="OK"
-    ok "Hardware Offloading уже настроен"
+    OFFLOAD_OK=1
+    ok "Offloading уже включён"
 
 else
     printf '\n'
@@ -484,55 +482,19 @@ else
     OFFLOAD_CHOICE=""
 
     printf 'Ваш выбор [1-2]: '
-    read -r OFFLOAD_CHOICE </dev/tty
+    IFS= read -r OFFLOAD_CHOICE < /dev/tty
 
     case "$OFFLOAD_CHOICE" in
         1)
             log "Включение Software Flow Offloading"
 
             if uci set firewall.@defaults[0].flow_offloading='1' &&
-                uci set firewall.@defaults[0].flow_offloading_hw='0' &&
-                uci set network.globals.packet_steering='2' &&
-                uci set network.globals.steering_flows='128' &&
-                uci commit firewall &&
-                uci commit network; then
+                uci set firewall.@defaults[0].flow_offloading_hw='0'; then
 
-                if [ -x /etc/init.d/firewall ]; then
-                    /etc/init.d/firewall reload >/dev/null 2>&1 || true
-                fi
-
-                if [ -x /etc/init.d/packet_steering ]; then
-                    /etc/init.d/packet_steering reload >/dev/null 2>&1 || true
-                fi
-
-                FLOW_OFFLOADING="$(
-                    uci -q get firewall.@defaults[0].flow_offloading 2>/dev/null || true
-                )"
-
-                FLOW_OFFLOADING_HW="$(
-                    uci -q get firewall.@defaults[0].flow_offloading_hw 2>/dev/null || true
-                )"
-
-                PACKET_STEERING="$(
-                    uci -q get network.globals.packet_steering 2>/dev/null || true
-                )"
-
-                STEERING_FLOWS="$(
-                    uci -q get network.globals.steering_flows 2>/dev/null || true
-                )"
-
-                if [ "$FLOW_OFFLOADING" = "1" ] &&
-                    [ "$FLOW_OFFLOADING_HW" = "0" ] &&
-                    [ "$PACKET_STEERING" = "2" ] &&
-                    [ "$STEERING_FLOWS" = "128" ]; then
-
-                    NETWORK_ACCELERATION_STATUS="OK"
-                    ok "Software Offloading и Packet Steering настроены"
-                else
-                    warn "Проверка сетевого ускорения не пройдена"
-                fi
+                OFFLOAD_OK=1
+                ok "Software Flow Offloading включён"
             else
-                warn "Не удалось настроить сетевое ускорение"
+                warn "Не удалось включить Software Flow Offloading"
             fi
             ;;
 
@@ -540,56 +502,131 @@ else
             log "Включение Hardware Flow Offloading"
 
             if uci set firewall.@defaults[0].flow_offloading='0' &&
-                uci set firewall.@defaults[0].flow_offloading_hw='1' &&
-                uci set network.globals.packet_steering='2' &&
-                uci set network.globals.steering_flows='128' &&
-                uci commit firewall &&
-                uci commit network; then
+                uci set firewall.@defaults[0].flow_offloading_hw='1'; then
 
-                if [ -x /etc/init.d/firewall ]; then
-                    /etc/init.d/firewall reload >/dev/null 2>&1 || true
-                fi
-
-                if [ -x /etc/init.d/packet_steering ]; then
-                    /etc/init.d/packet_steering reload >/dev/null 2>&1 || true
-                fi
-
-                FLOW_OFFLOADING="$(
-                    uci -q get firewall.@defaults[0].flow_offloading 2>/dev/null || true
-                )"
-
-                FLOW_OFFLOADING_HW="$(
-                    uci -q get firewall.@defaults[0].flow_offloading_hw 2>/dev/null || true
-                )"
-
-                PACKET_STEERING="$(
-                    uci -q get network.globals.packet_steering 2>/dev/null || true
-                )"
-
-                STEERING_FLOWS="$(
-                    uci -q get network.globals.steering_flows 2>/dev/null || true
-                )"
-
-                if [ "$FLOW_OFFLOADING" = "0" ] &&
-                    [ "$FLOW_OFFLOADING_HW" = "1" ] &&
-                    [ "$PACKET_STEERING" = "2" ] &&
-                    [ "$STEERING_FLOWS" = "128" ]; then
-
-                    NETWORK_ACCELERATION_STATUS="OK"
-                    ok "Hardware Offloading и Packet Steering настроены"
-                else
-                    warn "Проверка сетевого ускорения не пройдена"
-                fi
+                OFFLOAD_OK=1
+                ok "Hardware Flow Offloading включён"
             else
-                warn "Не удалось настроить сетевое ускорение"
+                warn "Не удалось включить Hardware Flow Offloading"
             fi
             ;;
 
         *)
-            NETWORK_ACCELERATION_STATUS="FAIL"
             err "Неверный выбор. Допустимы только 1 или 2."
             ;;
     esac
+fi
+
+# ─────────────────────────────────────────────
+# PACKET STEERING
+# ─────────────────────────────────────────────
+
+if [ "$PACKET_STEERING" = "2" ]; then
+
+    STEERING_OK=1
+    ok "Packet Steering уже включён"
+
+else
+
+    if uci set network.globals.packet_steering='2'; then
+        STEERING_OK=1
+        ok "Packet Steering включён"
+    else
+        warn "Не удалось включить Packet Steering"
+    fi
+fi
+
+# ─────────────────────────────────────────────
+# STEERING FLOWS
+# ─────────────────────────────────────────────
+
+if [ "$STEERING_FLOWS" = "128" ]; then
+
+    FLOWS_OK=1
+    ok "Steering Flows уже установлен: 128"
+
+else
+
+    if uci set network.globals.steering_flows='128'; then
+        FLOWS_OK=1
+        ok "Steering Flows установлен: 128"
+    else
+        warn "Не удалось установить Steering Flows: 128"
+    fi
+fi
+
+# ─────────────────────────────────────────────
+# СОХРАНЕНИЕ
+# ─────────────────────────────────────────────
+
+if ! uci commit firewall; then
+    OFFLOAD_OK=0
+    warn "Не удалось сохранить настройки Offloading"
+fi
+
+if ! uci commit network; then
+    STEERING_OK=0
+    FLOWS_OK=0
+    warn "Не удалось сохранить настройки Packet Steering/Steering Flows"
+fi
+
+if [ -x /etc/init.d/firewall ]; then
+    /etc/init.d/firewall reload >/dev/null 2>&1 || true
+fi
+
+if [ -x /etc/init.d/packet_steering ]; then
+    /etc/init.d/packet_steering reload >/dev/null 2>&1 || true
+fi
+
+# ─────────────────────────────────────────────
+# ФИНАЛЬНАЯ ПРОВЕРКА
+# ─────────────────────────────────────────────
+
+FLOW_OFFLOADING="$(
+    uci -q get firewall.@defaults[0].flow_offloading 2>/dev/null || true
+)"
+
+FLOW_OFFLOADING_HW="$(
+    uci -q get firewall.@defaults[0].flow_offloading_hw 2>/dev/null || true
+)"
+
+PACKET_STEERING="$(
+    uci -q get network.globals.packet_steering 2>/dev/null || true
+)"
+
+STEERING_FLOWS="$(
+    uci -q get network.globals.steering_flows 2>/dev/null || true
+)"
+
+if [ "$FLOW_OFFLOADING" = "1" ] ||
+    [ "$FLOW_OFFLOADING_HW" = "1" ]; then
+    OFFLOAD_OK=1
+else
+    OFFLOAD_OK=0
+fi
+
+if [ "$PACKET_STEERING" = "2" ]; then
+    STEERING_OK=1
+else
+    STEERING_OK=0
+fi
+
+if [ "$STEERING_FLOWS" = "128" ]; then
+    FLOWS_OK=1
+else
+    FLOWS_OK=0
+fi
+
+if [ "$OFFLOAD_OK" -eq 1 ] &&
+    [ "$STEERING_OK" -eq 1 ] &&
+    [ "$FLOWS_OK" -eq 1 ]; then
+
+    NETWORK_ACCELERATION_STATUS="OK"
+    ok "Сетевое ускорение настроено"
+
+else
+    NETWORK_ACCELERATION_STATUS="FAIL"
+    warn "Проверка сетевого ускорения не пройдена"
 fi
 
 log "Проверка памяти роутера"
