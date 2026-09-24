@@ -480,10 +480,11 @@ else
     printf '%s\n' "Выберите сетевое ускорение:"
     printf '%s\n' "1) Software Flow Offloading"
     printf '%s\n' "2) Hardware Flow Offloading"
-    printf 'Ваш выбор [1-2]: '
 
     OFFLOAD_CHOICE=""
-    read -r OFFLOAD_CHOICE
+
+    printf 'Ваш выбор [1-2]: '
+    read -r OFFLOAD_CHOICE </dev/tty
 
     case "$OFFLOAD_CHOICE" in
         1)
