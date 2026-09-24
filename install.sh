@@ -4,7 +4,9 @@ set -u
 
 AURORA_INSTALL_URL="https://openwrt.eamonxg.fun/install.sh"
 NETSHIFT_INSTALL_URL="https://raw.githubusercontent.com/yandexru45/netshift/refs/heads/main/install.sh"
-SINGBOX_RELEASE_API="https://api.github.com/repos/shtorm-7/sing-box-extended/releases/latest"
+
+SINGBOX_RELEASE_TAG="v1.14.0-extended-2.7.1"
+SINGBOX_RELEASE_API="https://api.github.com/repos/shtorm-7/sing-box-extended/releases/tags/${SINGBOX_RELEASE_TAG}"
 
 RELEASE_ARCH=""
 PKG_MANAGER=""
@@ -17,14 +19,20 @@ FLASH_OK=0
 TMP_DIR="/tmp/wrt-aio"
 
 SINGBOX_FILE=""
-SINGBOX_RELEASE_VERSION=""
-INSTALLED_SINGBOX_VERSION=""
-INSTALLED_SINGBOX_RELEASE_VERSION=""
 
 CRON_FILE="/etc/crontabs/root"
-CRON_LINE="0 5 * * * /sbin/reboot"
 
-PACKAGES_UPDATE_STATUS=PACKAGES_STATUS=BASE_RU_STATUS=AURORA_STATUS=SINGBOX_STATUS=NETSHIFT_STATUS=CRON_STATUS="ОТМЕНА"
+CRON_REBOOT_LINE="0 5 * * * /sbin/reboot"
+CRON_AUTO_UPDATE_LINE="* */5 * * * apk update && apk upgrade"
+
+PACKAGES_UPDATE_STATUS=PACKAGES_STATUS=BASE_RU_STATUS=AURORA_STATUS=""
+SINGBOX_STATUS=NETSHIFT_STATUS=""
+CRON_STATUS=AUTO_UPDATE_CRON_STATUS=""
+TIMEZONE_STATUS=NETWORK_ACCELERATION_STATUS=""
+
+PACKAGES_UPDATE_STATUS=PACKAGES_STATUS=BASE_RU_STATUS=AURORA_STATUS=\
+SINGBOX_STATUS=NETSHIFT_STATUS=CRON_STATUS=AUTO_UPDATE_CRON_STATUS=\
+TIMEZONE_STATUS=NETWORK_ACCELERATION_STATUS="ОТМЕНА"
 
 RED='\033[31m'
 GREEN='\033[32m'
@@ -290,58 +298,6 @@ apk_install_local() {
     apk add --allow-untrusted "$package_file"
 }
 
-singbox_version_is_newer() {
-    installed="$1"
-    candidate="$2"
-
-    [ -n "$installed" ] || return 0
-    [ -n "$candidate" ] || return 1
-
-    installed_parts="$(
-        printf '%s\n' "$installed" |
-            sed 's/-extended-/./; s/\./ /g'
-    )"
-
-    candidate_parts="$(
-        printf '%s\n' "$candidate" |
-            sed 's/-extended-/./; s/\./ /g'
-    )"
-
-    [ "$(printf '%s\n' "$installed_parts" | awk '{print NF}')" -eq 6 ] ||
-        return 1
-
-    [ "$(printf '%s\n' "$candidate_parts" | awk '{print NF}')" -eq 6 ] ||
-        return 1
-
-    awk '
-        NR == 1 {
-            for (i = 1; i <= 6; i++)
-                installed[i] = $i
-            next
-        }
-
-        NR == 2 {
-            for (i = 1; i <= 6; i++)
-                candidate[i] = $i
-        }
-
-        END {
-            for (i = 1; i <= 6; i++) {
-                if ((candidate[i] + 0) > (installed[i] + 0))
-                    exit 0
-
-                if ((candidate[i] + 0) < (installed[i] + 0))
-                    exit 1
-            }
-
-            exit 1
-        }
-    ' <<EOF
-$installed_parts
-$candidate_parts
-EOF
-}
-
 fetch_file() {
     url="$1"
     output="$2"
@@ -389,6 +345,18 @@ run_remote_installer() {
     sh "$installer"
 }
 
+run_netshift_installer() {
+    installer="$TMP_DIR/netshift-installer.sh"
+
+    if ! fetch_file "$NETSHIFT_INSTALL_URL" "$installer"; then
+        return 1
+    fi
+
+    chmod 700 "$installer" || return 1
+
+    printf '%s\n' "2" "y" | sh "$installer"
+}
+
 log "Обновление списка пакетов"
 
 if pkg_update_lists; then
@@ -432,6 +400,66 @@ else
     warn "Не удалось установить/обновить русскую локализацию"
 fi
 
+log "Настройка часового пояса и времени"
+
+TIMEZONE_OK=0
+
+CURRENT_ZONENAME="$(
+    uci -q get system.@system[0].zonename 2>/dev/null || true
+)"
+
+CURRENT_TIMEZONE="$(
+    uci -q get system.@system[0].timezone 2>/dev/null || true
+)"
+
+if [ "$CURRENT_ZONENAME" = "Asia/Yekaterinburg" ] &&
+    [ "$CURRENT_TIMEZONE" = "+05" ]; then
+
+    log "Часовой пояс уже настроен"
+
+else
+    uci set system.@system[0].zonename='Asia/Yekaterinburg' &&
+    uci set system.@system[0].timezone='+05' &&
+    uci commit system
+fi
+
+VERIFY_ZONENAME="$(
+    uci -q get system.@system[0].zonename 2>/dev/null || true
+)"
+
+VERIFY_TIMEZONE="$(
+    uci -q get system.@system[0].timezone 2>/dev/null || true
+)"
+
+if [ "$VERIFY_ZONENAME" = "Asia/Yekaterinburg" ] &&
+    [ "$VERIFY_TIMEZONE" = "+05" ]; then
+
+    if [ -x /usr/sbin/ntpd ]; then
+        if /usr/sbin/ntpd -q \
+            -p 194.190.168.1 \
+            -p 216.239.35.0 \
+            -p 216.239.35.4 \
+            -p 162.159.200.1 \
+            -p 162.159.200.123 \
+            >/dev/null 2>&1; then
+
+            TIMEZONE_OK=1
+        fi
+
+    elif [ -x /etc/init.d/sysntpd ]; then
+        if /etc/init.d/sysntpd restart >/dev/null 2>&1; then
+            TIMEZONE_OK=1
+        fi
+    fi
+fi
+
+if [ "$TIMEZONE_OK" -eq 1 ]; then
+    TIMEZONE_STATUS="OK"
+    ok "Часовой пояс Asia/Yekaterinburg установлен, время синхронизировано"
+else
+    warn "Не удалось полностью настроить часовой пояс/синхронизацию времени"
+fi
+
 log "Проверка наличия Aurora в системе"
 
 AURORA_PACKAGES="
@@ -459,13 +487,177 @@ if [ "$AURORA_NEEDS_UPDATE" -eq 0 ]; then
     ok "Aurora установлена и актуальна"
 else
     log "Установка/обновление Aurora"
+    log "Установщик Aurora остаётся интерактивным"
 
     if run_remote_installer "$AURORA_INSTALL_URL"; then
         AURORA_STATUS="OK"
-        ok "Aurora установлена/обновлена."
+        ok "Aurora установлена/обновлена"
     else
-        warn "Не удалось установить/обновить Aurora."
+        warn "Не удалось установить/обновить Aurora"
     fi
+fi
+
+log "Настройка сетевого ускорения"
+
+FLOW_OFFLOADING="$(
+    uci -q get firewall.@defaults[0].flow_offloading 2>/dev/null || true
+)"
+
+FLOW_OFFLOADING_HW="$(
+    uci -q get firewall.@defaults[0].flow_offloading_hw 2>/dev/null || true
+)"
+
+PACKET_STEERING="$(
+    uci -q get network.globals.packet_steering 2>/dev/null || true
+)"
+
+STEERING_FLOWS="$(
+    uci -q get network.globals.steering_flows 2>/dev/null || true
+)"
+
+if [ "$FLOW_OFFLOADING" = "1" ] &&
+    [ "$FLOW_OFFLOADING_HW" = "0" ] &&
+    [ "$PACKET_STEERING" = "2" ] &&
+    [ "$STEERING_FLOWS" = "128" ]; then
+
+    NETWORK_ACCELERATION_STATUS="OK"
+    ok "Software Offloading уже настроен"
+
+elif [ "$FLOW_OFFLOADING" = "0" ] &&
+    [ "$FLOW_OFFLOADING_HW" = "1" ] &&
+    [ "$PACKET_STEERING" = "2" ] &&
+    [ "$STEERING_FLOWS" = "128" ]; then
+
+    NETWORK_ACCELERATION_STATUS="OK"
+    ok "Hardware Offloading уже настроен"
+
+else
+    printf '\n'
+    printf '%s\n' "Выберите сетевое ускорение:"
+    printf '%s\n' "1) Software Flow Offloading"
+    printf '%s\n' "2) Hardware Flow Offloading"
+    printf '%s\n' "3) Пропустить"
+
+    OFFLOAD_CHOICE=""
+
+    while :; do
+        printf 'Ваш выбор [1-3]: '
+        read -r OFFLOAD_CHOICE
+
+        case "$OFFLOAD_CHOICE" in
+            1|2|3)
+                break
+                ;;
+            *)
+                printf '%s\n' "Введите 1, 2 или 3."
+                ;;
+        esac
+    done
+
+    case "$OFFLOAD_CHOICE" in
+        1)
+            log "Включение Software Flow Offloading"
+
+            if uci set firewall.@defaults[0].flow_offloading='1' &&
+                uci set firewall.@defaults[0].flow_offloading_hw='0' &&
+                uci set network.globals.packet_steering='2' &&
+                uci set network.globals.steering_flows='128' &&
+                uci commit firewall &&
+                uci commit network; then
+
+                if [ -x /etc/init.d/firewall ]; then
+                    /etc/init.d/firewall reload >/dev/null 2>&1 || true
+                fi
+
+                if [ -x /etc/init.d/packet_steering ]; then
+                    /etc/init.d/packet_steering reload >/dev/null 2>&1 || true
+                fi
+
+                FLOW_OFFLOADING="$(
+                    uci -q get firewall.@defaults[0].flow_offloading 2>/dev/null || true
+                )"
+
+                FLOW_OFFLOADING_HW="$(
+                    uci -q get firewall.@defaults[0].flow_offloading_hw 2>/dev/null || true
+                )"
+
+                PACKET_STEERING="$(
+                    uci -q get network.globals.packet_steering 2>/dev/null || true
+                )"
+
+                STEERING_FLOWS="$(
+                    uci -q get network.globals.steering_flows 2>/dev/null || true
+                )"
+
+                if [ "$FLOW_OFFLOADING" = "1" ] &&
+                    [ "$FLOW_OFFLOADING_HW" = "0" ] &&
+                    [ "$PACKET_STEERING" = "2" ] &&
+                    [ "$STEERING_FLOWS" = "128" ]; then
+
+                    NETWORK_ACCELERATION_STATUS="OK"
+                    ok "Software Offloading и Packet Steering настроены"
+                else
+                    warn "Проверка сетевого ускорения не пройдена"
+                fi
+            else
+                warn "Не удалось настроить сетевое ускорение"
+            fi
+            ;;
+
+        2)
+            log "Включение Hardware Flow Offloading"
+
+            if uci set firewall.@defaults[0].flow_offloading='0' &&
+                uci set firewall.@defaults[0].flow_offloading_hw='1' &&
+                uci set network.globals.packet_steering='2' &&
+                uci set network.globals.steering_flows='128' &&
+                uci commit firewall &&
+                uci commit network; then
+
+                if [ -x /etc/init.d/firewall ]; then
+                    /etc/init.d/firewall reload >/dev/null 2>&1 || true
+                fi
+
+                if [ -x /etc/init.d/packet_steering ]; then
+                    /etc/init.d/packet_steering reload >/dev/null 2>&1 || true
+                fi
+
+                FLOW_OFFLOADING="$(
+                    uci -q get firewall.@defaults[0].flow_offloading 2>/dev/null || true
+                )"
+
+                FLOW_OFFLOADING_HW="$(
+                    uci -q get firewall.@defaults[0].flow_offloading_hw 2>/dev/null || true
+                )"
+
+                PACKET_STEERING="$(
+                    uci -q get network.globals.packet_steering 2>/dev/null || true
+                )"
+
+                STEERING_FLOWS="$(
+                    uci -q get network.globals.steering_flows 2>/dev/null || true
+                )"
+
+                if [ "$FLOW_OFFLOADING" = "0" ] &&
+                    [ "$FLOW_OFFLOADING_HW" = "1" ] &&
+                    [ "$PACKET_STEERING" = "2" ] &&
+                    [ "$STEERING_FLOWS" = "128" ]; then
+
+                    NETWORK_ACCELERATION_STATUS="OK"
+                    ok "Hardware Offloading и Packet Steering настроены"
+                else
+                    warn "Проверка сетевого ускорения не пройдена"
+                fi
+            else
+                warn "Не удалось настроить сетевое ускорение"
+            fi
+            ;;
+
+        3)
+            NETWORK_ACCELERATION_STATUS="ПРОПУСК"
+            warn "Сетевое ускорение пропущено"
+            ;;
+    esac
 fi
 
 log "Проверка памяти роутера"
@@ -507,103 +699,34 @@ if [ "$FLASH_OK" -eq 1 ]; then
 
     log "Проверка наличия sing-box-extended"
 
-    SINGBOX_JSON="$TMP_DIR/singbox.json"
+    if pkg_installed "sing-box-extended"; then
 
-    if ! fetch_file "$SINGBOX_RELEASE_API" "$SINGBOX_JSON"; then
-        warn "Не удалось получить информацию о последнем релизе sing-box-extended"
+        SINGBOX_STATUS="OK"
+        ok "sing-box-extended уже установлен"
+
     else
-        SINGBOX_URL="$(
-            grep -o '"browser_download_url":[[:space:]]*"[^"]*"' "$SINGBOX_JSON" |
-                sed 's/^.*"browser_download_url":[[:space:]]*"//; s/"$//' |
-                grep -E "_openwrt_${RELEASE_ARCH}\.${PACKAGE_EXT}$" |
-                head -n 1
-        )"
+        log "sing-box-extended отсутствует. Установка фиксированной версии 2.7.1"
 
-        if [ -z "$SINGBOX_URL" ]; then
-            warn "Не найден пакет sing-box-extended для ${RELEASE_ARCH}.${PACKAGE_EXT}."
+        SINGBOX_JSON="$TMP_DIR/singbox.json"
+
+        if ! fetch_file "$SINGBOX_RELEASE_API" "$SINGBOX_JSON"; then
+            warn "Не удалось получить релиз sing-box-extended 2.7.1"
+            SINGBOX_STATUS="FAIL"
         else
-            SINGBOX_RELEASE_VERSION="$(
-                basename "$SINGBOX_URL" |
-                    sed 's/^sing-box-extended_//; s/_openwrt_.*$//'
+            SINGBOX_URL="$(
+                grep -o '"browser_download_url":[[:space:]]*"[^"]*"' "$SINGBOX_JSON" |
+                    sed 's/^.*"browser_download_url":[[:space:]]*"//; s/"$//' |
+                    grep -E "_openwrt_${RELEASE_ARCH}\.${PACKAGE_EXT}$" |
+                    head -n 1
             )"
 
-            log "Последняя версия: $SINGBOX_RELEASE_VERSION"
-
-            if pkg_installed "sing-box-extended"; then
-
-                INSTALLED_SINGBOX_VERSION="$(pkg_version "sing-box-extended")"
-
-                INSTALLED_SINGBOX_RELEASE_VERSION="$(
-                    printf '%s\n' "$INSTALLED_SINGBOX_VERSION" |
-                        sed 's/-r[0-9][0-9]*$//; s/^\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)\.\([0-9][0-9]*\)\.\([0-9][0-9]*\)\.\([0-9][0-9]*\)$/\1-extended-\2.\3.\4/'
-                )"
-
-                log "Установлена версия: $INSTALLED_SINGBOX_RELEASE_VERSION"
-
-                if singbox_version_is_newer \
-                    "$INSTALLED_SINGBOX_RELEASE_VERSION" \
-                    "$SINGBOX_RELEASE_VERSION"; then
-
-                    log "Доступно обновление!"
-
-                    case "$PKG_MANAGER" in
-                        apk)
-                            if apk del sing-box-extended; then
-
-                                SINGBOX_FILE="$TMP_DIR/$(basename "$SINGBOX_URL")"
-
-                                if fetch_file "$SINGBOX_URL" "$SINGBOX_FILE"; then
-                                    if apk_install_local "$SINGBOX_FILE"; then
-                                        SINGBOX_STATUS="OK"
-                                        ok "sing-box-extended обновлён"
-                                    else
-                                        SINGBOX_STATUS="FAIL"
-                                        warn "Не удалось установить новую версию после удаления старой"
-                                    fi
-                                else
-                                    SINGBOX_STATUS="FAIL"
-                                    warn "Не удалось скачать новую версию после удаления старой"
-                                fi
-
-                            else
-                                SINGBOX_STATUS="FAIL"
-                                warn "Не удалось удалить старую версию"
-                            fi
-                            ;;
-                        opkg)
-                            if opkg remove sing-box-extended 2>/dev/null; then
-
-                                SINGBOX_FILE="$TMP_DIR/$(basename "$SINGBOX_URL")"
-
-                                if fetch_file "$SINGBOX_URL" "$SINGBOX_FILE"; then
-                                    if opkg install "$SINGBOX_FILE"; then
-                                        SINGBOX_STATUS="OK"
-                                        ok "sing-box-extended обновлён"
-                                    else
-                                        SINGBOX_STATUS="FAIL"
-                                        warn "Не удалось установить новую версию sing-box-extended после удаления старой"
-                                    fi
-                                else
-                                    SINGBOX_STATUS="FAIL"
-                                    warn "Не удалось скачать новую версию sing-box-extended после удаления старой"
-                                fi
-
-                            else
-                                SINGBOX_STATUS="FAIL"
-                                warn "Не удалось удалить старую версию sing-box-extended"
-                            fi
-                            ;;
-                    esac
-
-                else
-                    SINGBOX_STATUS="OK"
-                    ok "sing-box-extended актуален"
-                fi
-
+            if [ -z "$SINGBOX_URL" ]; then
+                warn "Не найден пакет sing-box-extended 2.7.1 для ${RELEASE_ARCH}.${PACKAGE_EXT}"
+                SINGBOX_STATUS="FAIL"
             else
-                log "sing-box-extended не установлен. Установка"
-
                 SINGBOX_FILE="$TMP_DIR/$(basename "$SINGBOX_URL")"
+
+                log "Найден пакет: $(basename "$SINGBOX_URL")"
 
                 if fetch_file "$SINGBOX_URL" "$SINGBOX_FILE"; then
 
@@ -611,26 +734,26 @@ if [ "$FLASH_OK" -eq 1 ]; then
                         apk)
                             if apk_install_local "$SINGBOX_FILE"; then
                                 SINGBOX_STATUS="OK"
-                                ok "sing-box-extended установлен"
+                                ok "sing-box-extended 2.7.1 установлен"
                             else
                                 SINGBOX_STATUS="FAIL"
-                                warn "Не удалось установить sing-box-extended"
+                                warn "Не удалось установить sing-box-extended 2.7.1"
                             fi
                             ;;
                         opkg)
                             if opkg install "$SINGBOX_FILE"; then
                                 SINGBOX_STATUS="OK"
-                                ok "sing-box-extended установлен"
+                                ok "sing-box-extended 2.7.1 установлен"
                             else
                                 SINGBOX_STATUS="FAIL"
-                                warn "Не удалось установить sing-box-extended"
+                                warn "Не удалось установить sing-box-extended 2.7.1"
                             fi
                             ;;
                     esac
 
                 else
                     SINGBOX_STATUS="FAIL"
-                    warn "Не удалось скачать sing-box-extended"
+                    warn "Не удалось скачать sing-box-extended 2.7.1"
                 fi
             fi
         fi
@@ -672,11 +795,13 @@ if [ "$FLASH_OK" -eq 1 ]; then
             ok "NetShift уже установлен и актуален"
         else
             log "Установка/обновление NetShift"
+            log "Автоматический выбор: sing-box-extended + русский язык"
 
-            if run_remote_installer "$NETSHIFT_INSTALL_URL"; then
+            if run_netshift_installer; then
                 NETSHIFT_STATUS="OK"
                 ok "NetShift установлен/обновлён"
             else
+                NETSHIFT_STATUS="FAIL"
                 warn "Не удалось установить/обновить NetShift"
             fi
         fi
@@ -701,27 +826,61 @@ log "Проверка задачи планировщика на перезаг�
 
 if touch "$CRON_FILE" 2>/dev/null; then
 
-    if grep -Fqx "$CRON_LINE" "$CRON_FILE" 2>/dev/null; then
+    if grep -Fqx "$CRON_REBOOT_LINE" "$CRON_FILE" 2>/dev/null; then
         ok "Ежедневная перезагрузка в 05:00 уже настроена"
+        CRON_STATUS="OK"
     else
-        if printf '%s\n' "$CRON_LINE" >> "$CRON_FILE"; then
+        if printf '%s\n' "$CRON_REBOOT_LINE" >> "$CRON_FILE"; then
             ok "Добавлена ежедневная перезагрузка в 05:00"
+            CRON_STATUS="OK"
         else
-            warn "Не удалось добавить задачу в планировщик!"
+            warn "Не удалось добавить задачу перезагрузки"
         fi
     fi
 
-    if /etc/init.d/cron enable >/dev/null 2>&1 &&
-        /etc/init.d/cron restart >/dev/null 2>&1; then
+    if ! /etc/init.d/cron enable >/dev/null 2>&1 ||
+        ! /etc/init.d/cron restart >/dev/null 2>&1; then
 
-        CRON_STATUS="OK"
-        ok "Планировщик перезапущен для принятия изменений"
-    else
-        warn "Не удалось включить/перезапустить планировщик!"
+        CRON_STATUS="FAIL"
+        warn "Не удалось включить/перезапустить планировщик"
     fi
 
 else
-    warn "Не удалось открыть $CRON_FILE."
+    warn "Не удалось открыть $CRON_FILE"
+fi
+
+log "Проверка автоматического обновления пакетов"
+
+if [ "$PKG_MANAGER" = "apk" ]; then
+
+    if touch "$CRON_FILE" 2>/dev/null; then
+
+        if grep -Fqx "$CRON_AUTO_UPDATE_LINE" "$CRON_FILE" 2>/dev/null; then
+            AUTO_UPDATE_CRON_STATUS="OK"
+            ok "Автоматическое обновление каждые 5 часов уже настроено"
+        else
+            if printf '%s\n' "$CRON_AUTO_UPDATE_LINE" >> "$CRON_FILE"; then
+                AUTO_UPDATE_CRON_STATUS="OK"
+                ok "Добавлено автоматическое обновление пакетов каждые 5 часов"
+            else
+                warn "Не удалось добавить автоматическое обновление пакетов"
+            fi
+        fi
+
+        if ! /etc/init.d/cron enable >/dev/null 2>&1 ||
+            ! /etc/init.d/cron restart >/dev/null 2>&1; then
+
+            AUTO_UPDATE_CRON_STATUS="FAIL"
+            warn "Не удалось перезапустить планировщик"
+        fi
+
+    else
+        warn "Не удалось открыть $CRON_FILE"
+    fi
+
+else
+    AUTO_UPDATE_CRON_STATUS="ПРОПУСК"
+    warn "Автообновление через apk пропущено: используется $PKG_MANAGER"
 fi
 
 if [ "$SINGBOX_STATUS" = "OK" ] &&
@@ -749,11 +908,19 @@ printf 'Русская локализация          : '
 status "$BASE_RU_STATUS"
 printf '\n'
 
+printf 'Часовой пояс и время         : '
+status "$TIMEZONE_STATUS"
+printf '\n'
+
 printf 'Тема Aurora                  : '
 status "$AURORA_STATUS"
 printf '\n'
 
-printf 'Sing-box-extended            : '
+printf 'Сетевое ускорение            : '
+status "$NETWORK_ACCELERATION_STATUS"
+printf '\n'
+
+printf 'Sing-box-extended 2.7.1      : '
 status "$SINGBOX_STATUS"
 printf '\n'
 
@@ -761,8 +928,12 @@ printf 'NetShift                     : '
 status "$NETSHIFT_STATUS"
 printf '\n'
 
-printf 'Задача в планировщике        : '
+printf 'Перезагрузка в 05:00         : '
 status "$CRON_STATUS"
+printf '\n'
+
+printf 'Автообновление пакетов       : '
+status "$AUTO_UPDATE_CRON_STATUS"
 printf '\n'
 
 exit 0
