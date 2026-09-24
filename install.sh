@@ -21,18 +21,19 @@ TMP_DIR="/tmp/wrt-aio"
 SINGBOX_FILE=""
 
 CRON_FILE="/etc/crontabs/root"
-
 CRON_REBOOT_LINE="0 5 * * * /sbin/reboot"
 CRON_AUTO_UPDATE_LINE="* */5 * * * apk update && apk upgrade"
 
-PACKAGES_UPDATE_STATUS=PACKAGES_STATUS=BASE_RU_STATUS=AURORA_STATUS=""
-SINGBOX_STATUS=NETSHIFT_STATUS=""
-CRON_STATUS=AUTO_UPDATE_CRON_STATUS=""
-TIMEZONE_STATUS=NETWORK_ACCELERATION_STATUS=""
-
-PACKAGES_UPDATE_STATUS=PACKAGES_STATUS=BASE_RU_STATUS=AURORA_STATUS=\
-SINGBOX_STATUS=NETSHIFT_STATUS=CRON_STATUS=AUTO_UPDATE_CRON_STATUS=\
-TIMEZONE_STATUS=NETWORK_ACCELERATION_STATUS="ОТМЕНА"
+PACKAGES_UPDATE_STATUS="ОТМЕНА"
+PACKAGES_STATUS="ОТМЕНА"
+BASE_RU_STATUS="ОТМЕНА"
+AURORA_STATUS="ОТМЕНА"
+TIMEZONE_STATUS="ОТМЕНА"
+NETWORK_ACCELERATION_STATUS="ОТМЕНА"
+SINGBOX_STATUS="ОТМЕНА"
+NETSHIFT_STATUS="ОТМЕНА"
+CRON_STATUS="ОТМЕНА"
+AUTO_UPDATE_CRON_STATUS="ОТМЕНА"
 
 RED='\033[31m'
 GREEN='\033[32m'
@@ -332,6 +333,8 @@ fetch_file() {
     return 1
 }
 
+# Интерактивный установщик:
+# stdin направляется непосредственно на терминал.
 run_remote_installer() {
     url="$1"
     installer="$TMP_DIR/installer.sh"
@@ -342,9 +345,16 @@ run_remote_installer() {
 
     chmod 700 "$installer" || return 1
 
-    sh "$installer"
+    if [ -c /dev/tty ]; then
+        sh "$installer" </dev/tty
+    else
+        sh "$installer"
+    fi
 }
 
+# NetShift получает:
+# 2 = sing-box-extended
+# y = установка русской локализации LuCI
 run_netshift_installer() {
     installer="$TMP_DIR/netshift-installer.sh"
 
@@ -402,8 +412,6 @@ fi
 
 log "Настройка часового пояса и времени"
 
-TIMEZONE_OK=0
-
 CURRENT_ZONENAME="$(
     uci -q get system.@system[0].zonename 2>/dev/null || true
 )"
@@ -415,12 +423,16 @@ CURRENT_TIMEZONE="$(
 if [ "$CURRENT_ZONENAME" = "Asia/Yekaterinburg" ] &&
     [ "$CURRENT_TIMEZONE" = "+05" ]; then
 
-    log "Часовой пояс уже настроен"
-
+    ok "Часовой пояс уже настроен"
 else
-    uci set system.@system[0].zonename='Asia/Yekaterinburg' &&
-    uci set system.@system[0].timezone='+05' &&
-    uci commit system
+    if uci set system.@system[0].zonename='Asia/Yekaterinburg' &&
+        uci set system.@system[0].timezone='+05' &&
+        uci commit system; then
+
+        ok "Часовой пояс Asia/Yekaterinburg установлен"
+    else
+        warn "Не удалось установить часовой пояс"
+    fi
 fi
 
 VERIFY_ZONENAME="$(
@@ -431,33 +443,23 @@ VERIFY_TIMEZONE="$(
     uci -q get system.@system[0].timezone 2>/dev/null || true
 )"
 
-if [ "$VERIFY_ZONENAME" = "Asia/Yekaterinburg" ] &&
-    [ "$VERIFY_TIMEZONE" = "+05" ]; then
+TIME_SYNC_OK=0
 
-    if [ -x /usr/sbin/ntpd ]; then
-        if /usr/sbin/ntpd -q \
-            -p 194.190.168.1 \
-            -p 216.239.35.0 \
-            -p 216.239.35.4 \
-            -p 162.159.200.1 \
-            -p 162.159.200.123 \
-            >/dev/null 2>&1; then
-
-            TIMEZONE_OK=1
-        fi
-
-    elif [ -x /etc/init.d/sysntpd ]; then
-        if /etc/init.d/sysntpd restart >/dev/null 2>&1; then
-            TIMEZONE_OK=1
-        fi
+if [ -x /etc/init.d/sysntpd ]; then
+    if /etc/init.d/sysntpd enable >/dev/null 2>&1 &&
+        /etc/init.d/sysntpd restart >/dev/null 2>&1; then
+        TIME_SYNC_OK=1
     fi
 fi
 
-if [ "$TIMEZONE_OK" -eq 1 ]; then
+if [ "$VERIFY_ZONENAME" = "Asia/Yekaterinburg" ] &&
+    [ "$VERIFY_TIMEZONE" = "+05" ] &&
+    [ "$TIME_SYNC_OK" -eq 1 ]; then
+
     TIMEZONE_STATUS="OK"
-    ok "Часовой пояс Asia/Yekaterinburg установлен, время синхронизировано"
+    ok "Часовой пояс проверен, служба синхронизации времени запущена"
 else
-    warn "Не удалось полностью настроить часовой пояс/синхронизацию времени"
+    warn "Не удалось полностью проверить часовой пояс/синхронизацию времени"
 fi
 
 log "Проверка наличия Aurora в системе"
@@ -493,6 +495,7 @@ else
         AURORA_STATUS="OK"
         ok "Aurora установлена/обновлена"
     else
+        AURORA_STATUS="FAIL"
         warn "Не удалось установить/обновить Aurora"
     fi
 fi
@@ -710,8 +713,8 @@ if [ "$FLASH_OK" -eq 1 ]; then
         SINGBOX_JSON="$TMP_DIR/singbox.json"
 
         if ! fetch_file "$SINGBOX_RELEASE_API" "$SINGBOX_JSON"; then
-            warn "Не удалось получить релиз sing-box-extended 2.7.1"
             SINGBOX_STATUS="FAIL"
+            warn "Не удалось получить релиз sing-box-extended 2.7.1"
         else
             SINGBOX_URL="$(
                 grep -o '"browser_download_url":[[:space:]]*"[^"]*"' "$SINGBOX_JSON" |
@@ -721,8 +724,8 @@ if [ "$FLASH_OK" -eq 1 ]; then
             )"
 
             if [ -z "$SINGBOX_URL" ]; then
-                warn "Не найден пакет sing-box-extended 2.7.1 для ${RELEASE_ARCH}.${PACKAGE_EXT}"
                 SINGBOX_STATUS="FAIL"
+                warn "Не найден пакет sing-box-extended 2.7.1 для ${RELEASE_ARCH}.${PACKAGE_EXT}"
             else
                 SINGBOX_FILE="$TMP_DIR/$(basename "$SINGBOX_URL")"
 
@@ -740,6 +743,7 @@ if [ "$FLASH_OK" -eq 1 ]; then
                                 warn "Не удалось установить sing-box-extended 2.7.1"
                             fi
                             ;;
+
                         opkg)
                             if opkg install "$SINGBOX_FILE"; then
                                 SINGBOX_STATUS="OK"
@@ -827,13 +831,14 @@ log "Проверка задачи планировщика на перезаг�
 if touch "$CRON_FILE" 2>/dev/null; then
 
     if grep -Fqx "$CRON_REBOOT_LINE" "$CRON_FILE" 2>/dev/null; then
-        ok "Ежедневная перезагрузка в 05:00 уже настроена"
         CRON_STATUS="OK"
+        ok "Ежедневная перезагрузка в 05:00 уже настроена"
     else
         if printf '%s\n' "$CRON_REBOOT_LINE" >> "$CRON_FILE"; then
-            ok "Добавлена ежедневная перезагрузка в 05:00"
             CRON_STATUS="OK"
+            ok "Добавлена ежедневная перезагрузка в 05:00"
         else
+            CRON_STATUS="FAIL"
             warn "Не удалось добавить задачу перезагрузки"
         fi
     fi
@@ -846,6 +851,7 @@ if touch "$CRON_FILE" 2>/dev/null; then
     fi
 
 else
+    CRON_STATUS="FAIL"
     warn "Не удалось открыть $CRON_FILE"
 fi
 
@@ -863,6 +869,7 @@ if [ "$PKG_MANAGER" = "apk" ]; then
                 AUTO_UPDATE_CRON_STATUS="OK"
                 ok "Добавлено автоматическое обновление пакетов каждые 5 часов"
             else
+                AUTO_UPDATE_CRON_STATUS="FAIL"
                 warn "Не удалось добавить автоматическое обновление пакетов"
             fi
         fi
@@ -875,6 +882,7 @@ if [ "$PKG_MANAGER" = "apk" ]; then
         fi
 
     else
+        AUTO_UPDATE_CRON_STATUS="FAIL"
         warn "Не удалось открыть $CRON_FILE"
     fi
 
