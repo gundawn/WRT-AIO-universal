@@ -2,7 +2,6 @@
 
 set -u
 
-AURORA_INSTALL_URL="https://openwrt.eamonxg.fun/install.sh"
 NETSHIFT_INSTALL_URL="https://raw.githubusercontent.com/yandexru45/netshift/refs/heads/main/install.sh"
 
 SINGBOX_RELEASE_TAG="v1.14.0-extended-2.7.1"
@@ -27,7 +26,6 @@ CRON_AUTO_UPDATE_LINE="* */5 * * * apk update && apk upgrade"
 PACKAGES_UPDATE_STATUS="ОТМЕНА"
 PACKAGES_STATUS="ОТМЕНА"
 BASE_RU_STATUS="ОТМЕНА"
-AURORA_STATUS="ОТМЕНА"
 TIMEZONE_STATUS="ОТМЕНА"
 NETWORK_ACCELERATION_STATUS="ОТМЕНА"
 SINGBOX_STATUS="ОТМЕНА"
@@ -333,29 +331,6 @@ fetch_file() {
     return 1
 }
 
-# Интерактивный установщик.
-#
-# Aurora использует не stdin, а отдельный файловый дескриптор 3:
-#     read -r reply <&3
-#
-# Поэтому FD 3 обязательно подключаем непосредственно к /dev/tty.
-run_remote_installer() {
-    url="$1"
-    installer="$TMP_DIR/installer.sh"
-
-    if ! fetch_file "$url" "$installer"; then
-        return 1
-    fi
-
-    chmod 700 "$installer" || return 1
-
-    if [ -c /dev/tty ]; then
-        "$installer" </dev/tty >/dev/tty 2>/dev/tty 3</dev/tty
-    else
-        "$installer"
-    fi
-}
-
 # NetShift получает:
 # 2 = sing-box-extended
 # y = установка русской локализации LuCI
@@ -464,44 +439,6 @@ if [ "$VERIFY_ZONENAME" = "Asia/Yekaterinburg" ] &&
     ok "Часовой пояс проверен, служба синхронизации времени запущена"
 else
     warn "Не удалось полностью проверить часовой пояс/синхронизацию времени"
-fi
-
-log "Проверка наличия Aurora в системе"
-
-AURORA_PACKAGES="
-luci-theme-aurora
-luci-app-aurora-config
-luci-i18n-aurora-config-ru
-"
-
-AURORA_NEEDS_UPDATE=0
-
-for package in $AURORA_PACKAGES; do
-    if ! pkg_installed "$package"; then
-        AURORA_NEEDS_UPDATE=1
-        break
-    fi
-
-    if package_needs_update "$package"; then
-        AURORA_NEEDS_UPDATE=1
-        break
-    fi
-done
-
-if [ "$AURORA_NEEDS_UPDATE" -eq 0 ]; then
-    AURORA_STATUS="OK"
-    ok "Aurora установлена и актуальна"
-else
-    log "Установка/обновление Aurora"
-    log "Установщик Aurora остаётся интерактивным"
-
-    if run_remote_installer "$AURORA_INSTALL_URL"; then
-        AURORA_STATUS="OK"
-        ok "Aurora установлена/обновлена"
-    else
-        AURORA_STATUS="FAIL"
-        warn "Не удалось установить/обновить Aurora"
-    fi
 fi
 
 log "Настройка сетевого ускорения"
@@ -922,10 +859,6 @@ printf '\n'
 
 printf 'Часовой пояс и время         : '
 status "$TIMEZONE_STATUS"
-printf '\n'
-
-printf 'Тема Aurora                  : '
-status "$AURORA_STATUS"
 printf '\n'
 
 printf 'Сетевое ускорение            : '
