@@ -333,8 +333,12 @@ fetch_file() {
     return 1
 }
 
-# Интерактивный установщик:
-# stdin направляется непосредственно на терминал.
+# Интерактивный установщик.
+#
+# Aurora использует не stdin, а отдельный файловый дескриптор 3:
+#     read -r reply <&3
+#
+# Поэтому FD 3 обязательно подключаем непосредственно к /dev/tty.
 run_remote_installer() {
     url="$1"
     installer="$TMP_DIR/installer.sh"
@@ -346,9 +350,9 @@ run_remote_installer() {
     chmod 700 "$installer" || return 1
 
     if [ -c /dev/tty ]; then
-        sh "$installer" </dev/tty
+        "$installer" </dev/tty >/dev/tty 2>/dev/tty 3</dev/tty
     else
-        sh "$installer"
+        "$installer"
     fi
 }
 
