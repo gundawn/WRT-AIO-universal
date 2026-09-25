@@ -810,11 +810,11 @@ if [ "$PKG_MANAGER" = "apk" ]; then
 
         if grep -Fqx "$CRON_AUTO_UPDATE_LINE" "$CRON_FILE" 2>/dev/null; then
             AUTO_UPDATE_CRON_STATUS="OK"
-            ok "Автоматическое обновление каждые 5 часов уже настроено"
+            ok "Автоматическое обновление уже настроено"
         else
             if printf '%s\n' "$CRON_AUTO_UPDATE_LINE" >> "$CRON_FILE"; then
                 AUTO_UPDATE_CRON_STATUS="OK"
-                ok "Добавлено автоматическое обновление пакетов каждые 5 часов"
+                ok "Добавлено автоматическое обновление ПО"
             else
                 AUTO_UPDATE_CRON_STATUS="FAIL"
                 warn "Не удалось добавить автоматическое обновление пакетов"
