@@ -331,9 +331,6 @@ fetch_file() {
     return 1
 }
 
-# NetShift получает:
-# 2 = sing-box-extended
-# y = установка русской локализации LuCI
 run_netshift_installer() {
     installer="$TMP_DIR/netshift-installer.sh"
 
@@ -408,7 +405,7 @@ else
         uci set system.@system[0].timezone='+05' &&
         uci commit system; then
 
-        ok "Часовой пояс Asia/Yekaterinburg установлен"
+        ok "Часовой пояс GMT+5 установлен"
     else
         warn "Не удалось установить часовой пояс"
     fi
@@ -436,9 +433,9 @@ if [ "$VERIFY_ZONENAME" = "Asia/Yekaterinburg" ] &&
     [ "$TIME_SYNC_OK" -eq 1 ]; then
 
     TIMEZONE_STATUS="OK"
-    ok "Часовой пояс проверен, служба синхронизации времени запущена"
+    ok "Часовой пояс проверен, синхронизации запущена"
 else
-    warn "Не удалось полностью проверить часовой пояс/синхронизацию времени"
+    warn "Не удалось проверить часовой пояс"
 fi
 
 log "Настройка сетевого ускорения"
@@ -486,28 +483,28 @@ else
 
     case "$OFFLOAD_CHOICE" in
         1)
-            log "Включение Software Flow Offloading"
+            log "Включение Software Offloading"
 
             if uci set firewall.@defaults[0].flow_offloading='1' &&
                 uci set firewall.@defaults[0].flow_offloading_hw='0'; then
 
                 OFFLOAD_OK=1
-                ok "Software Flow Offloading включён"
+                ok "Software Offloading включён"
             else
-                warn "Не удалось включить Software Flow Offloading"
+                warn "Не удалось включить Software Offloading"
             fi
             ;;
 
         2)
-            log "Включение Hardware Flow Offloading"
+            log "Включение Hardware Offloading"
 
             if uci set firewall.@defaults[0].flow_offloading='0' &&
                 uci set firewall.@defaults[0].flow_offloading_hw='1'; then
 
                 OFFLOAD_OK=1
-                ok "Hardware Flow Offloading включён"
+                ok "Hardware Offloading включён"
             else
-                warn "Не удалось включить Hardware Flow Offloading"
+                warn "Не удалось включить Hardware Offloading"
             fi
             ;;
 
@@ -516,10 +513,6 @@ else
             ;;
     esac
 fi
-
-# ─────────────────────────────────────────────
-# PACKET STEERING
-# ─────────────────────────────────────────────
 
 if [ "$PACKET_STEERING" = "2" ]; then
 
@@ -536,10 +529,6 @@ else
     fi
 fi
 
-# ─────────────────────────────────────────────
-# STEERING FLOWS
-# ─────────────────────────────────────────────
-
 if [ "$STEERING_FLOWS" = "128" ]; then
 
     FLOWS_OK=1
@@ -554,10 +543,6 @@ else
         warn "Не удалось установить Steering Flows: 128"
     fi
 fi
-
-# ─────────────────────────────────────────────
-# СОХРАНЕНИЕ
-# ─────────────────────────────────────────────
 
 if ! uci commit firewall; then
     OFFLOAD_OK=0
@@ -577,10 +562,6 @@ fi
 if [ -x /etc/init.d/packet_steering ]; then
     /etc/init.d/packet_steering reload >/dev/null 2>&1 || true
 fi
-
-# ─────────────────────────────────────────────
-# ФИНАЛЬНАЯ ПРОВЕРКА
-# ─────────────────────────────────────────────
 
 FLOW_OFFLOADING="$(
     uci -q get firewall.@defaults[0].flow_offloading 2>/dev/null || true
