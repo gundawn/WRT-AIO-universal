@@ -1,5 +1,3 @@
-OpenWrt All In One Universal Script (OAIOUS)
-
 OpenWrt All In One Universal Script (OAIOUS) — AIO-скрипт для автоматической первоначальной подготовки роутера на OpenWrt.
 
 Скрипт в одном запуске выполняет обновление списков пакетов и установленного ПО, устанавливает или обновляет русскую локализацию LuCI, настраивает часовой пояс и синхронизацию времени, предлагает выбрать Software или Hardware Flow Offloading, включает Packet Steering и Steering Flows 128, проверяет объём Flash-памяти, устанавливает фиксированную версию sing-box-extended 2.7.1 под архитектуру конкретного устройства, устанавливает или обновляет NetShift, а также создаёт задачи Cron для ежедневной перезагрузки и автоматического обновления пакетов.
@@ -12,7 +10,9 @@ OpenWrt All In One Universal Script (OAIOUS) — AIO-скрипт для авт�
 
 Подключитесь к роутеру по SSH от имени root и выполните:
 
+```sh
 wget -O - https://raw.githubusercontent.com/gundawn/WRT-AIO-universal/main/install.sh | sh
+```
 
 После запуска скрипт автоматически определяет:
 
