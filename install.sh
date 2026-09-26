@@ -460,10 +460,6 @@ OFFLOAD_OK=0
 STEERING_OK=0
 FLOWS_OK=0
 
-# ─────────────────────────────────────────────
-# OFFLOADING
-# ─────────────────────────────────────────────
-
 if [ "$FLOW_OFFLOADING" = "1" ] ||
     [ "$FLOW_OFFLOADING_HW" = "1" ]; then
 
