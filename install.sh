@@ -21,7 +21,7 @@ SINGBOX_FILE=""
 
 CRON_FILE="/etc/crontabs/root"
 CRON_REBOOT_LINE="0 5 * * * /sbin/reboot"
-CRON_AUTO_UPDATE_LINE="* */5 * * * apk update && apk upgrade"
+CRON_AUTO_UPDATE_LINE="0 */5 * * * apk update && apk upgrade"
 
 PACKAGES_UPDATE_STATUS="ОТМЕНА"
 PACKAGES_STATUS="ОТМЕНА"
