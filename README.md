@@ -15,6 +15,8 @@ OAIOUS рассчитан не только на первоначальную у
 ```sh
 wget -O - https://raw.githubusercontent.com/gundawn/WRT-AIO-universal/main/install.sh | sh
 
+
+
 Скрипт автоматически определяет используемый пакетный менеджер:
 
 * apk
