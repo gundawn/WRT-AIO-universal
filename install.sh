@@ -4,31 +4,21 @@ set -u
 
 NETSHIFT_INSTALL_URL="https://raw.githubusercontent.com/yandexru45/netshift/refs/heads/main/install.sh"
 
-SINGBOX_RELEASE_TAG="v1.14.0-extended-2.7.1"
-SINGBOX_RELEASE_API="https://api.github.com/repos/shtorm-7/sing-box-extended/releases/tags/${SINGBOX_RELEASE_TAG}"
-
-RELEASE_ARCH=""
 PKG_MANAGER=""
-PACKAGE_EXT=""
-PKG_ARCH=""
-
-MIN_FLASH_MB=50
-FLASH_OK=0
 
 TMP_DIR="/tmp/wrt-aio"
 
-SINGBOX_FILE=""
-
 CRON_FILE="/etc/crontabs/root"
 CRON_REBOOT_LINE="0 5 * * * /sbin/reboot"
-CRON_AUTO_UPDATE_LINE="0 */5 * * * apk update && apk upgrade"
+CRON_AUTO_UPDATE_LINE=""
+
+FLASH_MIN_FREE_MB=20
 
 PACKAGES_UPDATE_STATUS="ОТМЕНА"
 PACKAGES_STATUS="ОТМЕНА"
 BASE_RU_STATUS="ОТМЕНА"
 TIMEZONE_STATUS="ОТМЕНА"
 NETWORK_ACCELERATION_STATUS="ОТМЕНА"
-SINGBOX_STATUS="ОТМЕНА"
 NETSHIFT_STATUS="ОТМЕНА"
 CRON_STATUS="ОТМЕНА"
 AUTO_UPDATE_CRON_STATUS="ОТМЕНА"
@@ -82,39 +72,31 @@ mkdir -p "$TMP_DIR" || {
     exit 1
 }
 
-if [ -f /etc/openwrt_release ]; then
-    . /etc/openwrt_release
-fi
-
-log "Обнаружена версия OpenWRT: ${DISTRIB_RELEASE:-unknown}"
-log "Обнаружена архитектура: ${DISTRIB_ARCH:-unknown}"
-
 if command -v apk >/dev/null 2>&1 &&
     ! command -v apk 2>/dev/null | grep -q '^/opt/bin/'; then
 
     PKG_MANAGER="apk"
-    PKG_ARCH="$(apk --print-arch 2>/dev/null || true)"
-    PACKAGE_EXT="apk"
 
 elif command -v opkg >/dev/null 2>&1 &&
     ! command -v opkg 2>/dev/null | grep -q '^/opt/bin/'; then
 
     PKG_MANAGER="opkg"
-    PKG_ARCH="$(
-        opkg print-architecture 2>/dev/null |
-            awk '$1 == "arch" {arch=$2} END {print arch}' ||
-            true
-    )"
-    PACKAGE_EXT="ipk"
 
 else
     err "Не удалось определить пакетный менеджер apk/opkg."
     exit 1
 fi
 
-RELEASE_ARCH="${DISTRIB_ARCH:-$PKG_ARCH}"
-
 log "Обнаружен менеджер пакетов: $PKG_MANAGER"
+
+case "$PKG_MANAGER" in
+    apk)
+        CRON_AUTO_UPDATE_LINE="0 */5 * * * apk update && apk upgrade"
+        ;;
+    opkg)
+        CRON_AUTO_UPDATE_LINE="0 */5 * * * opkg update && opkg list-upgradable | awk '{print \$1}' | while read -r package; do [ -n \"\$package\" ] && opkg upgrade \"\$package\"; done"
+        ;;
+esac
 
 pkg_installed() {
     package="$1"
@@ -288,15 +270,6 @@ pkg_upgrade_all() {
     esac
 }
 
-apk_install_local() {
-    package_file="$1"
-
-    [ -f "$package_file" ] || return 1
-    [ -s "$package_file" ] || return 1
-
-    apk add --allow-untrusted "$package_file"
-}
-
 fetch_file() {
     url="$1"
     output="$2"
@@ -331,6 +304,11 @@ fetch_file() {
     return 1
 }
 
+get_free_flash_mb() {
+    df -k /overlay 2>/dev/null |
+        awk 'NR==2 {printf "%d", $4 / 1024}'
+}
+
 run_netshift_installer() {
     installer="$TMP_DIR/netshift-installer.sh"
 
@@ -340,7 +318,7 @@ run_netshift_installer() {
 
     chmod 700 "$installer" || return 1
 
-    printf '%s\n' "2" "y" | sh "$installer"
+    printf '%s\n' "3" "y" | sh "$installer"
 }
 
 log "Обновление списка пакетов"
@@ -433,295 +411,177 @@ if [ "$VERIFY_ZONENAME" = "Asia/Yekaterinburg" ] &&
     [ "$TIME_SYNC_OK" -eq 1 ]; then
 
     TIMEZONE_STATUS="OK"
-    ok "Часовой пояс проверен, синхронизации запущена"
+    ok "Часовой пояс проверен, синхронизация запущена"
 else
     warn "Не удалось проверить часовой пояс"
 fi
 
-log "Настройка сетевого ускорения"
+log "Определение платформы для сетевого ускорения"
 
-FLOW_OFFLOADING="$(
-    uci -q get firewall.@defaults[0].flow_offloading 2>/dev/null || true
+DEVICE_COMPATIBLE="$(
+    tr '\000' '\n' < /proc/device-tree/compatible 2>/dev/null |
+        tr '[:upper:]' '[:lower:]' |
+        tr '\n' ' ' ||
+        true
 )"
 
-FLOW_OFFLOADING_HW="$(
-    uci -q get firewall.@defaults[0].flow_offloading_hw 2>/dev/null || true
-)"
+PLATFORM=""
+OFFLOAD_MODE=""
 
-PACKET_STEERING="$(
-    uci -q get network.globals.packet_steering 2>/dev/null || true
-)"
+case "$DEVICE_COMPATIBLE" in
+    *qcom*|*qualcomm*|*ipq*)
+        PLATFORM="qcom"
+        OFFLOAD_MODE="software"
+        ;;
+    *mediatek*|*filogic*|*mt*)
+        PLATFORM="mediatek/filogic"
+        OFFLOAD_MODE="hardware"
+        ;;
+esac
 
-STEERING_FLOWS="$(
-    uci -q get network.globals.steering_flows 2>/dev/null || true
-)"
-
-OFFLOAD_OK=0
-STEERING_OK=0
-FLOWS_OK=0
-
-if [ "$FLOW_OFFLOADING" = "1" ] ||
-    [ "$FLOW_OFFLOADING_HW" = "1" ]; then
-
-    OFFLOAD_OK=1
-    ok "Offloading уже включён"
-
-else
-    printf '\n'
-    printf '%s\n' "Выберите сетевое ускорение:"
-    printf '%s\n' "1) Software Flow Offloading"
-    printf '%s\n' "2) Hardware Flow Offloading"
-
-    OFFLOAD_CHOICE=""
-
-    printf 'Ваш выбор [1-2]: '
-    IFS= read -r OFFLOAD_CHOICE < /dev/tty
-
-    case "$OFFLOAD_CHOICE" in
-        1)
-            log "Включение Software Offloading"
-
-            if uci set firewall.@defaults[0].flow_offloading='1' &&
-                uci set firewall.@defaults[0].flow_offloading_hw='0'; then
-
-                OFFLOAD_OK=1
-                ok "Software Offloading включён"
-            else
-                warn "Не удалось включить Software Offloading"
-            fi
-            ;;
-
-        2)
-            log "Включение Hardware Offloading"
-
-            if uci set firewall.@defaults[0].flow_offloading='0' &&
-                uci set firewall.@defaults[0].flow_offloading_hw='1'; then
-
-                OFFLOAD_OK=1
-                ok "Hardware Offloading включён"
-            else
-                warn "Не удалось включить Hardware Offloading"
-            fi
-            ;;
-
-        *)
-            err "Неверный выбор. Допустимы только 1 или 2."
-            ;;
-    esac
-fi
-
-if [ "$PACKET_STEERING" = "2" ]; then
-
-    STEERING_OK=1
-    ok "Packet Steering уже включён"
-
-else
-
-    if uci set network.globals.packet_steering='2'; then
-        STEERING_OK=1
-        ok "Packet Steering включён"
-    else
-        warn "Не удалось включить Packet Steering"
-    fi
-fi
-
-if [ "$STEERING_FLOWS" = "128" ]; then
-
-    FLOWS_OK=1
-    ok "Steering Flows уже установлен: 128"
-
-else
-
-    if uci set network.globals.steering_flows='128'; then
-        FLOWS_OK=1
-        ok "Steering Flows установлен: 128"
-    else
-        warn "Не удалось установить Steering Flows: 128"
-    fi
-fi
-
-if ! uci commit firewall; then
-    OFFLOAD_OK=0
-    warn "Не удалось сохранить настройки Offloading"
-fi
-
-if ! uci commit network; then
-    STEERING_OK=0
-    FLOWS_OK=0
-    warn "Не удалось сохранить настройки Packet Steering/Steering Flows"
-fi
-
-if [ -x /etc/init.d/firewall ]; then
-    /etc/init.d/firewall reload >/dev/null 2>&1 || true
-fi
-
-if [ -x /etc/init.d/packet_steering ]; then
-    /etc/init.d/packet_steering reload >/dev/null 2>&1 || true
-fi
-
-FLOW_OFFLOADING="$(
-    uci -q get firewall.@defaults[0].flow_offloading 2>/dev/null || true
-)"
-
-FLOW_OFFLOADING_HW="$(
-    uci -q get firewall.@defaults[0].flow_offloading_hw 2>/dev/null || true
-)"
-
-PACKET_STEERING="$(
-    uci -q get network.globals.packet_steering 2>/dev/null || true
-)"
-
-STEERING_FLOWS="$(
-    uci -q get network.globals.steering_flows 2>/dev/null || true
-)"
-
-if [ "$FLOW_OFFLOADING" = "1" ] ||
-    [ "$FLOW_OFFLOADING_HW" = "1" ]; then
-    OFFLOAD_OK=1
-else
-    OFFLOAD_OK=0
-fi
-
-if [ "$PACKET_STEERING" = "2" ]; then
-    STEERING_OK=1
-else
-    STEERING_OK=0
-fi
-
-if [ "$STEERING_FLOWS" = "128" ]; then
-    FLOWS_OK=1
-else
-    FLOWS_OK=0
-fi
-
-if [ "$OFFLOAD_OK" -eq 1 ] &&
-    [ "$STEERING_OK" -eq 1 ] &&
-    [ "$FLOWS_OK" -eq 1 ]; then
-
-    NETWORK_ACCELERATION_STATUS="OK"
-    ok "Сетевое ускорение настроено"
-
-else
+if [ -z "$PLATFORM" ]; then
+    warn "Не удалось определить процессор"
     NETWORK_ACCELERATION_STATUS="FAIL"
-    warn "Проверка сетевого ускорения не пройдена"
-fi
-
-log "Проверка памяти роутера"
-
-OVERLAY_TOTAL_KB="$(
-    df -k /overlay 2>/dev/null |
-        awk 'NR == 2 {print $2}'
-)"
-
-if [ -z "$OVERLAY_TOTAL_KB" ]; then
-    OVERLAY_TOTAL_KB="$(
-        df -k / 2>/dev/null |
-            awk 'NR == 2 {print $2}'
-    )"
-fi
-
-if [ -n "$OVERLAY_TOTAL_KB" ] &&
-    [ "$OVERLAY_TOTAL_KB" -gt 0 ] 2>/dev/null; then
-
-    FLASH_TOTAL_MB=$((OVERLAY_TOTAL_KB / 1024))
-
-    log "Общая ёмкость памяти: ${FLASH_TOTAL_MB} MB"
-
-    if [ "$FLASH_TOTAL_MB" -ge "$MIN_FLASH_MB" ]; then
-        FLASH_OK=1
-        ok "Flash-память подходит для установки NetShift"
-    else
-        FLASH_OK=0
-        warn "Flash-память меньше минимального порога ${MIN_FLASH_MB} MB!"
-        warn "Установка sing-box-extended и NetShift будут пропущены."
-    fi
 else
-    FLASH_OK=0
-    warn "Не удалось определить общую ёмкость памяти."
-    warn "Установка sing-box-extended и NetShift будут пропущены."
-fi
+    log "Обнаружена процессора: $PLATFORM"
 
-if [ "$FLASH_OK" -eq 1 ]; then
+    if [ "$OFFLOAD_MODE" = "software" ]; then
+        log "Для платформы qcom включается программное ускорение"
 
-    log "Проверка наличия sing-box-extended"
+        if uci set firewall.@defaults[0].flow_offloading='1' &&
+            uci set firewall.@defaults[0].flow_offloading_hw='0'; then
 
-    if pkg_installed "sing-box-extended"; then
-
-        SINGBOX_STATUS="OK"
-        ok "sing-box-extended уже установлен"
-
-    else
-        log "sing-box-extended отсутствует. Установка фиксированной версии 2.7.1"
-
-        SINGBOX_JSON="$TMP_DIR/singbox.json"
-
-        if ! fetch_file "$SINGBOX_RELEASE_API" "$SINGBOX_JSON"; then
-            SINGBOX_STATUS="FAIL"
-            warn "Не удалось получить релиз sing-box-extended 2.7.1"
+            ok "Программное ускорение применено"
         else
-            SINGBOX_URL="$(
-                grep -o '"browser_download_url":[[:space:]]*"[^"]*"' "$SINGBOX_JSON" |
-                    sed 's/^.*"browser_download_url":[[:space:]]*"//; s/"$//' |
-                    grep -E "_openwrt_${RELEASE_ARCH}\.${PACKAGE_EXT}$" |
-                    head -n 1
-            )"
+            warn "Не удалось настроить Программное ускорение"
+        fi
 
-            if [ -z "$SINGBOX_URL" ]; then
-                SINGBOX_STATUS="FAIL"
-                warn "Не найден пакет sing-box-extended 2.7.1 для ${RELEASE_ARCH}.${PACKAGE_EXT}"
-            else
-                SINGBOX_FILE="$TMP_DIR/$(basename "$SINGBOX_URL")"
+    elif [ "$OFFLOAD_MODE" = "hardware" ]; then
+        log "Для платформы mediatek filogic включается Аппаратное ускорение"
 
-                log "Найден пакет: $(basename "$SINGBOX_URL")"
+        if uci set firewall.@defaults[0].flow_offloading='0' &&
+            uci set firewall.@defaults[0].flow_offloading_hw='1'; then
 
-                if fetch_file "$SINGBOX_URL" "$SINGBOX_FILE"; then
-
-                    case "$PKG_MANAGER" in
-                        apk)
-                            if apk_install_local "$SINGBOX_FILE"; then
-                                SINGBOX_STATUS="OK"
-                                ok "sing-box-extended 2.7.1 установлен"
-                            else
-                                SINGBOX_STATUS="FAIL"
-                                warn "Не удалось установить sing-box-extended 2.7.1"
-                            fi
-                            ;;
-
-                        opkg)
-                            if opkg install "$SINGBOX_FILE"; then
-                                SINGBOX_STATUS="OK"
-                                ok "sing-box-extended 2.7.1 установлен"
-                            else
-                                SINGBOX_STATUS="FAIL"
-                                warn "Не удалось установить sing-box-extended 2.7.1"
-                            fi
-                            ;;
-                    esac
-
-                else
-                    SINGBOX_STATUS="FAIL"
-                    warn "Не удалось скачать sing-box-extended 2.7.1"
-                fi
-            fi
+            ok "Аппаратное ускорение применено"
+        else
+            warn "Не удалось настроить Аппаратное ускорение"
         fi
     fi
 
-else
-    SINGBOX_STATUS="ПРОПУСК"
+    STEERING_OK=0
+    FLOWS_OK=0
+    OFFLOAD_OK=0
+
+    if uci set network.globals.packet_steering='2'; then
+        STEERING_OK=1
+        ok "Распределение нагрузки на ядра включёно"
+    else
+        warn "Не удалось включить Распределение нагрузки на ядра"
+    fi
+
+    if uci set network.globals.steering_flows='128'; then
+        FLOWS_OK=1
+        ok "Распределение пакетов: 128"
+    else
+        warn "Не удалось установить Распределение пакетов: 128"
+    fi
+
+    if ! uci commit firewall; then
+        OFFLOAD_OK=0
+        warn "Не удалось сохранить настройки ускорения"
+    fi
+
+    if ! uci commit network; then
+        STEERING_OK=0
+        FLOWS_OK=0
+        warn "Не удалось сохранить настройки распределения нагрузки на ядра"
+    fi
+
+    if [ -x /etc/init.d/firewall ]; then
+        /etc/init.d/firewall reload >/dev/null 2>&1 || true
+    fi
+
+    if [ -x /etc/init.d/packet_steering ]; then
+        /etc/init.d/packet_steering reload >/dev/null 2>&1 || true
+    fi
+
+    FLOW_OFFLOADING="$(
+        uci -q get firewall.@defaults[0].flow_offloading 2>/dev/null || true
+    )"
+
+    FLOW_OFFLOADING_HW="$(
+        uci -q get firewall.@defaults[0].flow_offloading_hw 2>/dev/null || true
+    )"
+
+    PACKET_STEERING="$(
+        uci -q get network.globals.packet_steering 2>/dev/null || true
+    )"
+
+    STEERING_FLOWS="$(
+        uci -q get network.globals.steering_flows 2>/dev/null || true
+    )"
+
+    if [ "$OFFLOAD_MODE" = "software" ] &&
+        [ "$FLOW_OFFLOADING" = "1" ] &&
+        [ "$FLOW_OFFLOADING_HW" = "0" ]; then
+
+        OFFLOAD_OK=1
+
+    elif [ "$OFFLOAD_MODE" = "hardware" ] &&
+        [ "$FLOW_OFFLOADING" = "0" ] &&
+        [ "$FLOW_OFFLOADING_HW" = "1" ]; then
+
+        OFFLOAD_OK=1
+
+    else
+        OFFLOAD_OK=0
+    fi
+
+    if [ "$PACKET_STEERING" = "2" ]; then
+        STEERING_OK=1
+    else
+        STEERING_OK=0
+    fi
+
+    if [ "$STEERING_FLOWS" = "128" ]; then
+        FLOWS_OK=1
+    else
+        FLOWS_OK=0
+    fi
+
+    if [ "$OFFLOAD_OK" -eq 1 ] &&
+        [ "$STEERING_OK" -eq 1 ] &&
+        [ "$FLOWS_OK" -eq 1 ]; then
+
+        NETWORK_ACCELERATION_STATUS="OK"
+        ok "Сетевое ускорение настроено"
+
+    else
+        NETWORK_ACCELERATION_STATUS="FAIL"
+        warn "Проверка сетевого ускорения не пройдена"
+    fi
 fi
 
-if [ "$FLASH_OK" -eq 1 ]; then
+log "Проверка свободного места во flash"
 
-    if [ "$SINGBOX_STATUS" = "OK" ] &&
-        pkg_installed "sing-box-extended"; then
+FREE_FLASH_MB="$(get_free_flash_mb)"
+
+if [ -n "$FREE_FLASH_MB" ]; then
+    log "Свободно во flash: ${FREE_FLASH_MB} МБ"
+
+    if [ "$FREE_FLASH_MB" -lt "$FLASH_MIN_FREE_MB" ]; then
+        NETSHIFT_STATUS="FAIL"
+        warn "Недостаточно свободного места для NetShift: требуется минимум ${FLASH_MIN_FREE_MB} МБ"
+    else
+        log "Свободного места достаточно для NetShift"
 
         log "Проверка наличия NetShift"
 
         NETSHIFT_PACKAGES="
-        netshift
-        luci-app-netshift
-        luci-i18n-netshift-ru
-        "
+netshift
+luci-app-netshift
+luci-i18n-netshift-ru
+"
 
         NETSHIFT_NEEDS_UPDATE=0
 
@@ -742,7 +602,7 @@ if [ "$FLASH_OK" -eq 1 ]; then
             ok "NetShift уже установлен и актуален"
         else
             log "Установка/обновление NetShift"
-            log "Автоматический выбор: sing-box-extended + русский язык"
+            log "Автоматический выбор: sing-box extended + русский язык"
 
             if run_netshift_installer; then
                 NETSHIFT_STATUS="OK"
@@ -752,21 +612,10 @@ if [ "$FLASH_OK" -eq 1 ]; then
                 warn "Не удалось установить/обновить NetShift"
             fi
         fi
-
-    elif [ "$SINGBOX_STATUS" = "ПРОПУСК" ]; then
-
-        NETSHIFT_STATUS="ПРОПУСК"
-        warn "NetShift пропущен: sing-box-extended не обрабатывался."
-
-    else
-
-        NETSHIFT_STATUS="ПРОПУСК"
-        warn "NetShift пропущен: sing-box-extended не установлен."
-
     fi
-
 else
-    NETSHIFT_STATUS="ПРОПУСК"
+    NETSHIFT_STATUS="FAIL"
+    warn "Не удалось определить свободное место во flash"
 fi
 
 log "Проверка задачи планировщика на перезагрузку"
@@ -800,43 +649,31 @@ fi
 
 log "Проверка автоматического обновления пакетов"
 
-if [ "$PKG_MANAGER" = "apk" ]; then
+if touch "$CRON_FILE" 2>/dev/null; then
 
-    if touch "$CRON_FILE" 2>/dev/null; then
-
-        if grep -Fqx "$CRON_AUTO_UPDATE_LINE" "$CRON_FILE" 2>/dev/null; then
-            AUTO_UPDATE_CRON_STATUS="OK"
-            ok "Автоматическое обновление уже настроено"
-        else
-            if printf '%s\n' "$CRON_AUTO_UPDATE_LINE" >> "$CRON_FILE"; then
-                AUTO_UPDATE_CRON_STATUS="OK"
-                ok "Добавлено автоматическое обновление ПО"
-            else
-                AUTO_UPDATE_CRON_STATUS="FAIL"
-                warn "Не удалось добавить автоматическое обновление пакетов"
-            fi
-        fi
-
-        if ! /etc/init.d/cron enable >/dev/null 2>&1 ||
-            ! /etc/init.d/cron restart >/dev/null 2>&1; then
-
-            AUTO_UPDATE_CRON_STATUS="FAIL"
-            warn "Не удалось перезапустить планировщик"
-        fi
-
+    if grep -Fqx "$CRON_AUTO_UPDATE_LINE" "$CRON_FILE" 2>/dev/null; then
+        AUTO_UPDATE_CRON_STATUS="OK"
+        ok "Автоматическое обновление уже настроено"
     else
+        if printf '%s\n' "$CRON_AUTO_UPDATE_LINE" >> "$CRON_FILE"; then
+            AUTO_UPDATE_CRON_STATUS="OK"
+            ok "Добавлено автоматическое обновление ПО"
+        else
+            AUTO_UPDATE_CRON_STATUS="FAIL"
+            warn "Не удалось добавить автоматическое обновление пакетов"
+        fi
+    fi
+
+    if ! /etc/init.d/cron enable >/dev/null 2>&1 ||
+        ! /etc/init.d/cron restart >/dev/null 2>&1; then
+
         AUTO_UPDATE_CRON_STATUS="FAIL"
-        warn "Не удалось открыть $CRON_FILE"
+        warn "Не удалось перезапустить планировщик"
     fi
 
 else
-    AUTO_UPDATE_CRON_STATUS="ПРОПУСК"
-    warn "Автообновление через apk пропущено: используется $PKG_MANAGER"
-fi
-
-if [ "$SINGBOX_STATUS" = "OK" ] &&
-    ! pkg_installed "sing-box-extended"; then
-    SINGBOX_STATUS="FAIL"
+    AUTO_UPDATE_CRON_STATUS="FAIL"
+    warn "Не удалось открыть $CRON_FILE"
 fi
 
 if [ "$NETSHIFT_STATUS" = "OK" ] &&
@@ -865,10 +702,6 @@ printf '\n'
 
 printf 'Сетевое ускорение            : '
 status "$NETWORK_ACCELERATION_STATUS"
-printf '\n'
-
-printf 'Sing-box-extended 2.7.1      : '
-status "$SINGBOX_STATUS"
 printf '\n'
 
 printf 'NetShift                     : '
