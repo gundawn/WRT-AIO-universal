@@ -12,13 +12,12 @@ CRON_FILE="/etc/crontabs/root"
 CRON_REBOOT_LINE="0 5 * * * /sbin/reboot"
 CRON_AUTO_UPDATE_LINE=""
 
-FLASH_MIN_FREE_MB=20
-
 PACKAGES_UPDATE_STATUS="ОТМЕНА"
 PACKAGES_STATUS="ОТМЕНА"
 BASE_RU_STATUS="ОТМЕНА"
 TIMEZONE_STATUS="ОТМЕНА"
 NETWORK_ACCELERATION_STATUS="ОТМЕНА"
+LOCAL_APK_STATUS="ОТМЕНА"
 NETSHIFT_STATUS="ОТМЕНА"
 CRON_STATUS="ОТМЕНА"
 AUTO_UPDATE_CRON_STATUS="ОТМЕНА"
@@ -88,6 +87,33 @@ else
 fi
 
 log "Обнаружен менеджер пакетов: $PKG_MANAGER"
+
+if [ "$PKG_MANAGER" = "apk" ]; then
+    log "Проверка установки локальных APK"
+
+    APK_CONFIG="/etc/apk/config"
+
+    if mkdir -p /etc/apk; then
+        if grep -Fqx "allow-untrusted" "$APK_CONFIG" 2>/dev/null; then
+            LOCAL_APK_STATUS="OK"
+            ok "Установка локальных apk уже включена"
+        else
+            if printf '%s\n' "allow-untrusted" >> "$APK_CONFIG"; then
+                LOCAL_APK_STATUS="OK"
+                ok "Установка локальных apk включена"
+            else
+                LOCAL_APK_STATUS="FAIL"
+                warn "Не удалось включить установку локальных apk"
+            fi
+        fi
+    else
+        LOCAL_APK_STATUS="FAIL"
+        warn "Не удалось создать /etc/apk"
+    fi
+else
+    LOCAL_APK_STATUS="OK"
+    ok "Для opkg установка локальных APK не требуется"
+fi
 
 case "$PKG_MANAGER" in
     apk)
@@ -304,11 +330,6 @@ fetch_file() {
     return 1
 }
 
-get_free_flash_mb() {
-    df -k /overlay 2>/dev/null |
-        awk 'NR==2 {printf "%d", $4 / 1024}'
-}
-
 run_netshift_installer() {
     installer="$TMP_DIR/netshift-installer.sh"
 
@@ -318,7 +339,7 @@ run_netshift_installer() {
 
     chmod 700 "$installer" || return 1
 
-    printf '%s\n' "3" "y" | sh "$installer"
+    sh "$installer"
 }
 
 log "Обновление списка пакетов"
@@ -562,60 +583,42 @@ else
     fi
 fi
 
-log "Проверка свободного места во flash"
+log "Проверка наличия NetShift"
 
-FREE_FLASH_MB="$(get_free_flash_mb)"
-
-if [ -n "$FREE_FLASH_MB" ]; then
-    log "Свободно во flash: ${FREE_FLASH_MB} МБ"
-
-    if [ "$FREE_FLASH_MB" -lt "$FLASH_MIN_FREE_MB" ]; then
-        NETSHIFT_STATUS="FAIL"
-        warn "Недостаточно свободного места для NetShift: требуется минимум ${FLASH_MIN_FREE_MB} МБ"
-    else
-        log "Свободного места достаточно для NetShift"
-
-        log "Проверка наличия NetShift"
-
-        NETSHIFT_PACKAGES="
+NETSHIFT_PACKAGES="
 netshift
 luci-app-netshift
 luci-i18n-netshift-ru
 "
 
-        NETSHIFT_NEEDS_UPDATE=0
+NETSHIFT_NEEDS_UPDATE=0
 
-        for package in $NETSHIFT_PACKAGES; do
-            if ! pkg_installed "$package"; then
-                NETSHIFT_NEEDS_UPDATE=1
-                break
-            fi
-
-            if package_needs_update "$package"; then
-                NETSHIFT_NEEDS_UPDATE=1
-                break
-            fi
-        done
-
-        if [ "$NETSHIFT_NEEDS_UPDATE" -eq 0 ]; then
-            NETSHIFT_STATUS="OK"
-            ok "NetShift уже установлен и актуален"
-        else
-            log "Установка/обновление NetShift"
-            log "Автоматический выбор: sing-box extended + русский язык"
-
-            if run_netshift_installer; then
-                NETSHIFT_STATUS="OK"
-                ok "NetShift установлен/обновлён"
-            else
-                NETSHIFT_STATUS="FAIL"
-                warn "Не удалось установить/обновить NetShift"
-            fi
-        fi
+for package in $NETSHIFT_PACKAGES; do
+    if ! pkg_installed "$package"; then
+        NETSHIFT_NEEDS_UPDATE=1
+        break
     fi
+
+    if package_needs_update "$package"; then
+        NETSHIFT_NEEDS_UPDATE=1
+        break
+    fi
+done
+
+if [ "$NETSHIFT_NEEDS_UPDATE" -eq 0 ]; then
+    NETSHIFT_STATUS="OK"
+    ok "NetShift уже установлен и актуален"
 else
-    NETSHIFT_STATUS="FAIL"
-    warn "Не удалось определить свободное место во flash"
+    log "Установка/обновление NetShift"
+    log "Автоматический выбор: sing-box extended + русский язык"
+
+    if run_netshift_installer; then
+        NETSHIFT_STATUS="OK"
+        ok "NetShift установлен/обновлён"
+    else
+        NETSHIFT_STATUS="FAIL"
+        warn "Не удалось установить/обновить NetShift"
+    fi
 fi
 
 log "Проверка задачи планировщика на перезагрузку"
@@ -702,6 +705,10 @@ printf '\n'
 
 printf 'Сетевое ускорение            : '
 status "$NETWORK_ACCELERATION_STATUS"
+printf '\n'
+
+printf 'Установка локальных APK      : '
+status "$LOCAL_APK_STATUS"
 printf '\n'
 
 printf 'NetShift                     : '
