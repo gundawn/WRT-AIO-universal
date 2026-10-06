@@ -88,33 +88,6 @@ fi
 
 log "Обнаружен менеджер пакетов: $PKG_MANAGER"
 
-if [ "$PKG_MANAGER" = "apk" ]; then
-    log "Проверка установки локальных APK"
-
-    APK_CONFIG="/etc/apk/config"
-
-    if mkdir -p /etc/apk; then
-        if grep -Fqx "allow-untrusted" "$APK_CONFIG" 2>/dev/null; then
-            LOCAL_APK_STATUS="OK"
-            ok "Установка локальных apk уже включена"
-        else
-            if printf '%s\n' "allow-untrusted" >> "$APK_CONFIG"; then
-                LOCAL_APK_STATUS="OK"
-                ok "Установка локальных apk включена"
-            else
-                LOCAL_APK_STATUS="FAIL"
-                warn "Не удалось включить установку локальных apk"
-            fi
-        fi
-    else
-        LOCAL_APK_STATUS="FAIL"
-        warn "Не удалось создать /etc/apk"
-    fi
-else
-    LOCAL_APK_STATUS="OK"
-    ok "Для opkg установка локальных APK не требуется"
-fi
-
 case "$PKG_MANAGER" in
     apk)
         CRON_AUTO_UPDATE_LINE="0 */5 * * * apk update && apk upgrade"
@@ -619,6 +592,33 @@ else
         NETSHIFT_STATUS="FAIL"
         warn "Не удалось установить/обновить NetShift"
     fi
+fi
+
+log "Проверка установки локальных APK"
+
+if [ "$PKG_MANAGER" = "apk" ]; then
+    APK_CONFIG="/etc/apk/config"
+
+    if mkdir -p /etc/apk; then
+        if grep -Fqx "allow-untrusted" "$APK_CONFIG" 2>/dev/null; then
+            LOCAL_APK_STATUS="OK"
+            ok "Установка локальных apk уже включена"
+        else
+            if printf '%s\n' "allow-untrusted" >> "$APK_CONFIG"; then
+                LOCAL_APK_STATUS="OK"
+                ok "Установка локальных apk включена"
+            else
+                LOCAL_APK_STATUS="FAIL"
+                warn "Не удалось включить установку локальных apk"
+            fi
+        fi
+    else
+        LOCAL_APK_STATUS="FAIL"
+        warn "Не удалось создать /etc/apk"
+    fi
+else
+    LOCAL_APK_STATUS="OK"
+    ok "Для opkg установка локальных APK не требуется"
 fi
 
 log "Проверка задачи планировщика на перезагрузку"
