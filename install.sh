@@ -594,7 +594,7 @@ else
     fi
 fi
 
-log "Проверка установки локальных APK"
+log "Настройка установки локальных пакетов"
 
 if [ "$PKG_MANAGER" = "apk" ]; then
     APK_CONFIG="/etc/apk/config"
@@ -602,23 +602,24 @@ if [ "$PKG_MANAGER" = "apk" ]; then
     if mkdir -p /etc/apk; then
         if grep -Fqx "allow-untrusted" "$APK_CONFIG" 2>/dev/null; then
             LOCAL_APK_STATUS="OK"
-            ok "Установка локальных apk уже включена"
+            ok "Установка локальных apk уже разрешена"
         else
             if printf '%s\n' "allow-untrusted" >> "$APK_CONFIG"; then
                 LOCAL_APK_STATUS="OK"
-                ok "Установка локальных apk включена"
+                ok "Установка локальных apk разрешена"
             else
                 LOCAL_APK_STATUS="FAIL"
-                warn "Не удалось включить установку локальных apk"
+                warn "Не удалось разрешить установку локальных apk"
             fi
         fi
     else
         LOCAL_APK_STATUS="FAIL"
         warn "Не удалось создать /etc/apk"
     fi
-else
+
+elif [ "$PKG_MANAGER" = "opkg" ]; then
     LOCAL_APK_STATUS="OK"
-    ok "Для opkg установка локальных APK не требуется"
+    ok "Менеджер opkg не требует дополнительных прав, пропуск"
 fi
 
 log "Проверка задачи планировщика на перезагрузку"
