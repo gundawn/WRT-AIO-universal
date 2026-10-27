@@ -2,8 +2,6 @@
 
 set -u
 
-NETSHIFT_INSTALL_URL="https://raw.githubusercontent.com/yandexru45/netshift/refs/heads/main/install.sh"
-
 TMP_DIR="/tmp/wrt-aio"
 
 CRON_FILE="/etc/crontabs/root"
@@ -16,7 +14,6 @@ BASE_RU_STATUS="ОТМЕНА"
 TIMEZONE_STATUS="ОТМЕНА"
 NETWORK_ACCELERATION_STATUS="ОТМЕНА"
 LOCAL_APK_STATUS="ОТМЕНА"
-NETSHIFT_STATUS="ОТМЕНА"
 CRON_STATUS="ОТМЕНА"
 AUTO_UPDATE_CRON_STATUS="ОТМЕНА"
 
@@ -105,50 +102,47 @@ pkg_upgrade_all() {
     fi
 }
 
-fetch_file() {
-    url="$1"
-    output="$2"
+configure_russian_language() {
+    log "Проверка и установка русской локализации"
 
-    rm -f "$output"
+    RU_PACKAGES="
+luci-i18n-base-ru
+luci-i18n-advanced-reboot-ru
+luci-i18n-attendedsysupgrade-ru
+luci-i18n-firewall-ru
+luci-i18n-package-manager-ru
+"
 
-    if command -v wget >/dev/null 2>&1; then
-        wget -q -O "$output" "$url" 2>/dev/null &&
-            [ -s "$output" ] &&
-            return 0
+    RU_FAILED=0
 
-        rm -f "$output"
+    for package in $RU_PACKAGES; do
+        if pkg_installed "$package"; then
+            ok "$package уже установлен"
+            continue
+        fi
 
-        wget -q --no-check-certificate -O "$output" "$url" 2>/dev/null &&
-            [ -s "$output" ] &&
-            return 0
+        log "Установка $package"
+
+        if pkg_install "$package"; then
+            if pkg_installed "$package"; then
+                ok "$package установлен"
+            else
+                warn "Не удалось подтвердить установку $package"
+                RU_FAILED=1
+            fi
+        else
+            warn "Не удалось установить $package"
+            RU_FAILED=1
+        fi
+    done
+
+    if [ "$RU_FAILED" -eq 0 ]; then
+        BASE_RU_STATUS="OK"
+        ok "Все пакеты русской локализации установлены"
+    else
+        BASE_RU_STATUS="FAIL"
+        warn "Не все пакеты русской локализации установлены"
     fi
-
-    if command -v curl >/dev/null 2>&1; then
-        curl -fsSL -o "$output" "$url" 2>/dev/null &&
-            [ -s "$output" ] &&
-            return 0
-
-        rm -f "$output"
-
-        curl -kfsSL -o "$output" "$url" 2>/dev/null &&
-            [ -s "$output" ] &&
-            return 0
-    fi
-
-    rm -f "$output"
-    return 1
-}
-
-run_netshift_installer() {
-    installer="$TMP_DIR/netshift-installer.sh"
-
-    if ! fetch_file "$NETSHIFT_INSTALL_URL" "$installer"; then
-        return 1
-    fi
-
-    chmod 700 "$installer" || return 1
-
-    sh "$installer"
 }
 
 configure_timezone() {
@@ -190,6 +184,7 @@ configure_timezone() {
 
         TIMEZONE_STATUS="OK"
     else
+        TIMEZONE_STATUS="FAIL"
         warn "Не удалось проверить часовой пояс"
     fi
 
@@ -200,106 +195,36 @@ configure_timezone() {
 }
 
 configure_network_acceleration() {
-    log "Определение платформы для сетевого ускорения"
-
-    DEVICE_COMPATIBLE="$(
-        tr '\000' '\n' < /proc/device-tree/compatible 2>/dev/null |
-            tr '[:upper:]' '[:lower:]' |
-            tr '\n' ' ' ||
-            true
-    )"
-
-    PLATFORM=""
-    OFFLOAD_MODE="software"
-
-    case "$DEVICE_COMPATIBLE" in
-        *qcom*|*qualcomm*|*ipq*)
-            PLATFORM="qcom"
-            OFFLOAD_MODE="software"
-            ;;
-        *mediatek*|*filogic*|*mt*)
-            PLATFORM="mediatek/filogic"
-            OFFLOAD_MODE="hardware"
-            ;;
-        *)
-            PLATFORM="unknown"
-            OFFLOAD_MODE="software"
-            ;;
-    esac
-
-    if [ "$PLATFORM" = "unknown" ]; then
-        warn "Не удалось определить процессор, используется программное ускорение"
-    else
-        log "Обнаружен процессор: $PLATFORM"
-    fi
+    log "Настройка распределения сетевой нагрузки"
 
     STEERING_OK=0
     FLOWS_OK=0
-    OFFLOAD_OK=0
-
-    if [ "$OFFLOAD_MODE" = "software" ]; then
-        log "Включается программное ускорение"
-
-        if uci set firewall.@defaults[0].flow_offloading='1' &&
-            uci set firewall.@defaults[0].flow_offloading_hw='0'; then
-            ok "Программное ускорение применено"
-        else
-            warn "Не удалось настроить программное ускорение"
-        fi
-    else
-        log "Включается аппаратное ускорение"
-
-        if uci set firewall.@defaults[0].flow_offloading='0' &&
-            uci set firewall.@defaults[0].flow_offloading_hw='1'; then
-            ok "Аппаратное ускорение применено"
-        else
-            warn "Не удалось настроить аппаратное ускорение"
-        fi
-    fi
 
     if uci set network.globals.packet_steering='2'; then
-        STEERING_OK=1
         ok "Распределение нагрузки на ядра включено"
     else
         warn "Не удалось включить распределение нагрузки на ядра"
     fi
 
     if uci set network.globals.steering_flows='128'; then
-        FLOWS_OK=1
         ok "Распределение пакетов: 128"
     else
         warn "Не удалось установить распределение пакетов: 128"
     fi
 
-    if uci commit firewall; then
-        :
-    else
-        warn "Не удалось сохранить настройки ускорения"
-    fi
-
     if uci commit network; then
-        :
+        ok "Настройки распределения нагрузки сохранены"
     else
-        STEERING_OK=0
-        FLOWS_OK=0
-        warn "Не удалось сохранить настройки распределения нагрузки на ядра"
-    fi
-
-    if [ -x /etc/init.d/firewall ]; then
-        /etc/init.d/firewall reload >/dev/null 2>&1 || true
+        warn "Не удалось сохранить настройки распределения нагрузки"
     fi
 
     if [ -x /etc/init.d/packet_steering ]; then
-        /etc/init.d/packet_steering reload >/dev/null 2>&1 || true
+        if /etc/init.d/packet_steering reload >/dev/null 2>&1; then
+            ok "Служба распределения нагрузки перезагружена"
+        else
+            warn "Не удалось перезагрузить службу распределения нагрузки"
+        fi
     fi
-
-    FLOW_OFFLOADING="$(
-        uci -q get firewall.@defaults[0].flow_offloading 2>/dev/null || true
-    )"
-
-    FLOW_OFFLOADING_HW="$(
-        uci -q get firewall.@defaults[0].flow_offloading_hw 2>/dev/null || true
-    )"
 
     PACKET_STEERING="$(
         uci -q get network.globals.packet_steering 2>/dev/null || true
@@ -309,38 +234,20 @@ configure_network_acceleration() {
         uci -q get network.globals.steering_flows 2>/dev/null || true
     )"
 
-    if [ "$OFFLOAD_MODE" = "software" ] &&
-        [ "$FLOW_OFFLOADING" = "1" ] &&
-        [ "$FLOW_OFFLOADING_HW" = "0" ]; then
-        OFFLOAD_OK=1
-
-    elif [ "$OFFLOAD_MODE" = "hardware" ] &&
-        [ "$FLOW_OFFLOADING" = "0" ] &&
-        [ "$FLOW_OFFLOADING_HW" = "1" ]; then
-        OFFLOAD_OK=1
-    fi
-
     if [ "$PACKET_STEERING" = "2" ]; then
         STEERING_OK=1
-    else
-        STEERING_OK=0
     fi
 
     if [ "$STEERING_FLOWS" = "128" ]; then
         FLOWS_OK=1
-    else
-        FLOWS_OK=0
     fi
 
-    if [ "$OFFLOAD_OK" -eq 1 ] &&
-        [ "$STEERING_OK" -eq 1 ] &&
-        [ "$FLOWS_OK" -eq 1 ]; then
-
+    if [ "$STEERING_OK" -eq 1 ] && [ "$FLOWS_OK" -eq 1 ]; then
         NETWORK_ACCELERATION_STATUS="OK"
-        ok "Сетевое ускорение настроено"
+        ok "Распределение сетевой нагрузки настроено"
     else
         NETWORK_ACCELERATION_STATUS="FAIL"
-        warn "Проверка сетевого ускорения не пройдена"
+        warn "Проверка распределения сетевой нагрузки не пройдена"
     fi
 }
 
@@ -420,6 +327,7 @@ if pkg_update_lists; then
     PACKAGES_UPDATE_STATUS="OK"
     ok "Списки пакетов обновлены"
 else
+    PACKAGES_UPDATE_STATUS="FAIL"
     warn "Не удалось обновить списки пакетов"
 fi
 
@@ -429,53 +337,15 @@ if pkg_upgrade_all; then
     PACKAGES_STATUS="OK"
     ok "Пакеты обновлены"
 else
+    PACKAGES_STATUS="FAIL"
     warn "Ошибка при обновлении пакетов"
 fi
 
-log "Проверка наличия русского языка в системе"
-
-if ! pkg_installed "luci-i18n-base-ru"; then
-    log "Установка русского языка"
-
-    if pkg_install "luci-i18n-base-ru"; then
-        BASE_RU_STATUS="OK"
-        ok "Русская локализация установлена"
-    else
-        warn "Не удалось установить русскую локализацию"
-    fi
-else
-    BASE_RU_STATUS="OK"
-    ok "Русская локализация уже установлена"
-fi
-
+configure_russian_language
 configure_timezone
 configure_network_acceleration
-
-log "Проверка наличия NetShift"
-
-if pkg_installed "netshift"; then
-    NETSHIFT_STATUS="OK"
-    ok "NetShift уже установлен"
-else
-    log "Установка NetShift"
-    log "Автоматический выбор: sing-box extended + русский язык"
-
-    if run_netshift_installer; then
-        NETSHIFT_STATUS="OK"
-        ok "NetShift установлен"
-    else
-        NETSHIFT_STATUS="FAIL"
-        warn "Не удалось установить NetShift"
-    fi
-fi
-
 configure_local_apk
 configure_cron
-
-if [ "$NETSHIFT_STATUS" = "OK" ] &&
-    ! pkg_installed "netshift"; then
-    NETSHIFT_STATUS="FAIL"
-fi
 
 printf '\n'
 printf '%s\n' 'УСТАНОВКА ЗАВЕРШЕНА!'
@@ -496,16 +366,12 @@ printf 'Часовой пояс и время         : '
 status "$TIMEZONE_STATUS"
 printf '\n'
 
-printf 'Сетевое ускорение            : '
+printf 'Распределение сетевой нагрузки: '
 status "$NETWORK_ACCELERATION_STATUS"
 printf '\n'
 
 printf 'Установка локальных APK      : '
 status "$LOCAL_APK_STATUS"
-printf '\n'
-
-printf 'NetShift                     : '
-status "$NETSHIFT_STATUS"
 printf '\n'
 
 printf 'Перезагрузка в 05:00         : '
