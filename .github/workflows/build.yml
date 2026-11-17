@@ -1,3 +1,4 @@
+
 name: Build Redmi AX6 firmware
 
 on:
@@ -170,9 +171,7 @@ jobs:
           # Remove old package world with checksum pins.
           rm -f "$FILES/etc/apk/world"
 
-          # NetShift must be installed as real APK packages.
-          # Keep its configuration, remove copied package-managed files.
-
+          # Remove copied NetShift package files.
           rm -f \
             "$FILES/usr/bin/netshift" \
             "$FILES/etc/init.d/netshift" \
@@ -182,11 +181,15 @@ jobs:
 
           rm -rf "$FILES/usr/lib/netshift"
 
+          # NetShift LuCI view can be a directory or a file.
           if [ -d "$FILES/www/luci-static/resources/view" ]; then
-            rm -f "$FILES"/www/luci-static/resources/view/netshift_*
+            find "$FILES/www/luci-static/resources/view" \
+              -maxdepth 1 \
+              -name 'netshift_*' \
+              -exec rm -rf {} +
           fi
 
-          # Do not remove /etc/config/netshift.
+          # Preserve NetShift configuration.
           if [ -f "$FILES/etc/config/netshift" ]; then
             echo "NetShift configuration preserved."
           fi
@@ -313,7 +316,6 @@ jobs:
           echo "50e8eb879e2973f419ca2c62815fd2a9e7346d0c5e7c3b2c733688e64ec59319  /tmp/luci-i18n-netshift-ru.apk" \
             | sha256sum -c -
 
-          # IMPORTANT:
           # Release asset version is 0.9.12,
           # internal APK package version is 0.261025.30010.
           # ImageBuilder local repository requires the internal version
@@ -438,12 +440,6 @@ jobs:
           if "libnghttp2-14" not in packages:
               raise SystemExit(
                   "ERROR: libnghttp2-14 missing from package list"
-              )
-
-          if "libnghttp2" in packages:
-              print(
-                  "NOTICE: libnghttp2 is a separate package name; "
-                  "libnghttp2-14 is also retained."
               )
 
           print("\nPackage list generated successfully.")
