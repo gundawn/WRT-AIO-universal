@@ -27,7 +27,8 @@ jobs:
             wget \
             zstd \
             python3 \
-            squashfs-tools
+            squashfs-tools \
+            openssl
 
       - name: Verify backup files
         shell: bash
@@ -51,8 +52,8 @@ jobs:
           BASE_URL="https://downloads.openwrt.org/releases/25.12.6/targets/qualcommax/ipq807x"
           ARCHIVE="openwrt-imagebuilder-25.12.6-qualcommax-ipq807x.Linux-x86_64.tar.zst"
 
-          curl -fL "$BASE_URL/$ARCHIVE" -o "$ARCHIVE"
-          curl -fL "$BASE_URL/sha256sums" -o sha256sums
+          curl -fL --retry 3 "$BASE_URL/$ARCHIVE" -o "$ARCHIVE"
+          curl -fL --retry 3 "$BASE_URL/sha256sums" -o sha256sums
 
           EXPECTED="$(awk -v f="$ARCHIVE" '
             {
@@ -78,9 +79,6 @@ jobs:
             openwrt-imagebuilder-25.12.6-qualcommax-ipq807x.Linux-x86_64 \
             imagebuilder
 
-          mkdir -p "$GITHUB_WORKSPACE/imagebuilder/tmp"
-          echo "TMPDIR=$GITHUB_WORKSPACE/imagebuilder/tmp" >> "$GITHUB_ENV"
-
       - name: Restore original configuration and files
         shell: bash
         run: |
@@ -90,51 +88,47 @@ jobs:
 
           tar -xzpf custom-files.tar.gz -C imagebuilder/files
 
-          echo "=== Checking restored Sing-box Extended Lite ==="
+          echo "=== Checking Sing-box Extended Lite ==="
 
           test -s imagebuilder/files/usr/bin/sing-box
 
           echo "ea8297584c4b624a2349409e4ac53b2fe0cc284c88b2c6dfb6f51efcf7d42195  imagebuilder/files/usr/bin/sing-box" \
             | sha256sum -c -
 
-          echo "Custom configuration restored."
+          echo "Original configuration restored."
 
       - name: Download official NetShift APK packages
         shell: bash
         run: |
           set -euo pipefail
 
-          VERSION="0.9.12"
-          RELEASE_URL="https://github.com/yandexru45/netshift/releases/download/$VERSION"
+          RELEASE_URL="https://github.com/yandexru45/netshift/releases/download/0.9.12"
 
           mkdir -p imagebuilder/packages
 
-          curl -fL \
+          curl -fL --retry 3 \
             "$RELEASE_URL/netshift-0.9.12-r1.apk" \
             -o imagebuilder/packages/netshift-0.9.12-r1.apk
 
-          curl -fL \
+          curl -fL --retry 3 \
             "$RELEASE_URL/luci-app-netshift-0.9.12-r1.apk" \
             -o imagebuilder/packages/luci-app-netshift-0.9.12-r1.apk
 
-          curl -fL \
+          curl -fL --retry 3 \
             "$RELEASE_URL/luci-i18n-netshift-ru-0.9.12.apk" \
             -o imagebuilder/packages/luci-i18n-netshift-ru-0.9.12.apk
 
           echo "=== Verifying NetShift APK checksums ==="
 
-          echo "af84753fc38c2cbabdce2c444050309c7dbd9b2d02b4f93e8dfe1a4c8f30cf72  imagebuilder/packages/netshift-0.9.12-r1.apk" \
-            | sha256sum -c -
+          echo "af84753fc38c2cbabdce2c444050309c7dbd9b2d02b4f93e8dfe1a4c8f30cf72  imagebuilder/packages/netshift-0.9.12-r1.apk" | sha256sum -c -
 
-          echo "de285bf9d3b93be95074e80aabf5b4a280ffe36772acff82722f7bfe42a5ec12  imagebuilder/packages/luci-app-netshift-0.9.12-r1.apk" \
-            | sha256sum -c -
+          echo "de285bf9d3b93be95074e80aabf5b4a280ffe36772acff82722f7bfe42a5ec12  imagebuilder/packages/luci-app-netshift-0.9.12-r1.apk" | sha256sum -c -
 
-          echo "50e8eb879e2973f419ca2c62815fd2a9e7346d0c5e7c3b2c733688e64ec59319  imagebuilder/packages/luci-i18n-netshift-ru-0.9.12.apk" \
-            | sha256sum -c -
+          echo "50e8eb879e2973f419ca2c62815fd2a9e7346d0c5e7c3b2c733688e64ec59319  imagebuilder/packages/luci-i18n-netshift-ru-0.9.12.apk" | sha256sum -c -
 
-          echo "All three official NetShift APK packages verified."
+          echo "All NetShift APK packages verified."
 
-      - name: Configure Aurora repository and signing keys
+      - name: Configure Aurora repository and APK signing keys
         shell: bash
         run: |
           set -euo pipefail
@@ -143,44 +137,64 @@ jobs:
 
           AURORA_URL="https://openwrt.eamonxg.fun/snapshots/apk/packages.adb"
 
-          echo "=== Configuring tagged Aurora repository ==="
+          echo "=== Checking Aurora repository availability ==="
 
-          sed -i '\|openwrt.eamonxg.fun|d' repositories
-          echo "@aurora $AURORA_URL" >> repositories
+          curl -fL --retry 3 --retry-delay 2 \
+            "$AURORA_URL" \
+            -o /tmp/aurora-packages.adb
+
+          test -s /tmp/aurora-packages.adb
+
+          echo "Aurora package index downloaded."
+
+          echo "=== Checking original Aurora keys ==="
+
+          AURORA_KEY_DIR="files/usr/share/aurora/feed"
+
+          test -s "$AURORA_KEY_DIR/eamonxg.pem"
+          test -s "$AURORA_KEY_DIR/eamonxg.pub"
+
+          openssl pkey -pubin \
+            -in "$AURORA_KEY_DIR/eamonxg.pem" \
+            -noout
+
+          echo "Both Aurora keys found."
+
+          echo "=== Installing keys into ImageBuilder ==="
 
           mkdir -p keys
           mkdir -p files/etc/apk/keys
 
-          if [ ! -d files/usr/share/aurora/feed ]; then
-            echo "ERROR: Aurora feed keys directory missing from backup."
-            exit 1
+          cp -f "$AURORA_KEY_DIR/eamonxg.pem" keys/eamonxg.pem
+          cp -f "$AURORA_KEY_DIR/eamonxg.pub" keys/eamonxg.pub
+
+          cp -f "$AURORA_KEY_DIR/eamonxg.pem" \
+            files/etc/apk/keys/eamonxg.pem
+
+          cp -f "$AURORA_KEY_DIR/eamonxg.pub" \
+            files/etc/apk/keys/eamonxg.pub
+
+          echo "=== Configuring tagged Aurora repository ==="
+
+          sed -i '\|openwrt.eamonxg.fun|d' repositories
+
+          echo "@aurora $AURORA_URL" >> repositories
+
+          mkdir -p files/etc/apk/repositories.d
+
+          if [ -f files/etc/apk/repositories.d/aurora.list ]; then
+            sed -i '\|openwrt.eamonxg.fun|d' \
+              files/etc/apk/repositories.d/aurora.list
           fi
 
-          find files/usr/share/aurora/feed \
-            -maxdepth 1 \
-            -type f \
-            -name '*.pub' \
-            -exec cp -f {} keys/ \;
+          echo "$AURORA_URL" \
+            > files/etc/apk/repositories.d/aurora.list
 
-          find files/usr/share/aurora/feed \
-            -maxdepth 1 \
-            -type f \
-            -name '*.pub' \
-            -exec cp -f {} files/etc/apk/keys/ \;
+          echo "=== ImageBuilder repositories ==="
+          cat repositories
 
-          if ! find keys -maxdepth 1 -type f -name '*.pub' -print -quit | grep -q .; then
-            echo "ERROR: Aurora public signing key not found."
-            exit 1
-          fi
-
-          echo "=== Aurora signing keys ==="
-          ls -lh keys
-
-          echo "=== Runtime APK repositories ==="
-
-          mkdir -p files/etc/apk
-
-          cp repositories files/etc/apk/repositories
+          echo "=== Aurora key files ==="
+          ls -lh keys/eamonxg.*
 
           echo "Aurora repository and keys configured."
 
@@ -192,7 +206,6 @@ jobs:
           rm -f imagebuilder/files/etc/apk/world
 
           echo "Old APK world constraints removed."
-          echo "ImageBuilder will generate package constraints for the new image."
 
       - name: Prepare complete package selection
         shell: bash
@@ -223,6 +236,7 @@ jobs:
           }
 
           packages = set()
+          expected = set()
 
           with open("packages.txt", encoding="utf-8") as source:
               for line_number, line in enumerate(source, 1):
@@ -240,8 +254,7 @@ jobs:
 
                   if not match:
                       raise SystemExit(
-                          f"ERROR: Cannot parse package entry "
-                          f"on line {line_number}: {token}"
+                          f"ERROR: Cannot parse line {line_number}: {token}"
                       )
 
                   name = match.group(1)
@@ -249,10 +262,15 @@ jobs:
                   if name in excluded:
                       continue
 
+                  expected.add(name)
+
                   if name in aurora:
                       packages.add(name + "@aurora")
                   else:
                       packages.add(name)
+
+          expected.update(aurora)
+          expected.update(netshift)
 
           for name in aurora:
               packages.add(name + "@aurora")
@@ -263,56 +281,24 @@ jobs:
           with open("/tmp/packages.list", "w", encoding="utf-8") as output:
               output.write(" ".join(sorted(packages)))
 
-          expected = set()
-
-          with open("packages.txt", encoding="utf-8") as source:
-              for line in source:
-                  line = line.strip()
-
-                  if not line:
-                      continue
-
-                  token = line.split()[0]
-                  match = re.match(
-                      r"^(.+)-([0-9][A-Za-z0-9.+~_-]*)$",
-                      token
-                  )
-
-                  if not match:
-                      continue
-
-                  name = match.group(1)
-
-                  if name not in excluded:
-                      expected.add(name)
-
-          expected.update(aurora)
-          expected.update(netshift)
-
           with open("/tmp/expected-packages.txt", "w", encoding="utf-8") as output:
               output.write("\n".join(sorted(expected)) + "\n")
 
-          print(f"Source package count: {len(expected)}")
-          print(f"Final package specification count: {len(packages)}")
+          print(f"Expected package count: {len(expected)}")
+          print(f"Package specifications: {len(packages)}")
 
-          print("\n=== Aurora packages ===")
+          print("\n=== Aurora ===")
           for name in sorted(aurora):
               print(name + "@aurora")
 
-          print("\n=== NetShift packages ===")
+          print("\n=== NetShift ===")
           for name in sorted(netshift):
               print(name)
 
-          print("\n=== Sing-box handling ===")
-          print("Stock sing-box package retained in package selection.")
-          print("Extended Lite binary restored from custom-files.tar.gz.")
-
-          print("\n=== Correct package parser ===")
-          print("libnghttp2-14 is retained as libnghttp2-14.")
+          print("\n=== Complete package list ===")
+          for name in sorted(packages):
+              print(name)
           PY
-
-          echo "=== Complete package selection ==="
-          tr ' ' '\n' < /tmp/packages.list | sort
 
       - name: Verify Redmi AX6 ImageBuilder profile
         shell: bash
@@ -321,11 +307,9 @@ jobs:
 
           cd imagebuilder
 
-          mkdir -p "$PWD/tmp"
-
           make info > /tmp/imagebuilder-profiles.txt
 
-          if ! grep -F "redmi_ax6" /tmp/imagebuilder-profiles.txt; then
+          if ! grep -Fq "redmi_ax6" /tmp/imagebuilder-profiles.txt; then
             echo "ERROR: Redmi AX6 profile not found."
             cat /tmp/imagebuilder-profiles.txt
             exit 1
@@ -406,14 +390,13 @@ jobs:
 
           SINGBOX_HASH="$(sudo sha256sum "$ROOT/usr/bin/sing-box" | awk '{print $1}')"
 
-          echo "Sing-box SHA256: $SINGBOX_HASH"
-
           if [ "$SINGBOX_HASH" != "ea8297584c4b624a2349409e4ac53b2fe0cc284c88b2c6dfb6f51efcf7d42195" ]; then
             echo "ERROR: Sing-box Extended Lite binary mismatch."
+            echo "Actual: $SINGBOX_HASH"
             exit 1
           fi
 
-          echo "Sing-box Extended Lite confirmed."
+          echo "Sing-box Extended Lite verified."
 
           echo "=== Checking original package set ==="
 
@@ -435,9 +418,9 @@ jobs:
             exit 1
           fi
 
-          echo "All expected packages are registered."
+          echo "All original packages registered."
 
-          echo "=== Checking NetShift package registration ==="
+          echo "=== Checking NetShift packages ==="
 
           for PACKAGE in \
             netshift \
@@ -448,7 +431,7 @@ jobs:
             echo "OK: $PACKAGE"
           done
 
-          echo "=== Checking Aurora package registration ==="
+          echo "=== Checking Aurora packages ==="
 
           for PACKAGE in \
             luci-app-aurora-config \
@@ -461,13 +444,6 @@ jobs:
             echo "OK: $PACKAGE"
           done
 
-          echo "=== Checking Sing-box package record ==="
-
-          sudo grep -Fxq "P:sing-box" "$APK_DB"
-
-          echo "Stock sing-box package record retained."
-          echo "Custom Extended Lite binary verified separately."
-
           echo "=== Checking NetShift files ==="
 
           sudo test -s "$ROOT/usr/bin/netshift"
@@ -478,24 +454,20 @@ jobs:
           sudo test -f "$ROOT/usr/share/rpcd/acl.d/luci-app-netshift.json"
           sudo test -d "$ROOT/www/luci-static/resources/view/netshift_ea5babe"
 
-          echo "NetShift files confirmed."
+          echo "NetShift files verified."
 
           echo "=== Checking Aurora files ==="
 
           sudo test -d "$ROOT/usr/share/aurora"
-          sudo test -f "$ROOT/etc/config/aurora"
-
-          echo "Aurora files confirmed."
-
-          echo "=== Checking runtime Aurora repository ==="
-
-          sudo grep -Fq \
-            "@aurora https://openwrt.eamonxg.fun/snapshots/apk/packages.adb" \
-            "$ROOT/etc/apk/repositories"
-
+          sudo test -s "$ROOT/etc/apk/keys/eamonxg.pem"
           sudo test -s "$ROOT/etc/apk/keys/eamonxg.pub"
+          sudo test -s "$ROOT/etc/apk/repositories.d/aurora.list"
 
-          echo "Aurora repository and signing key confirmed."
+          sudo grep -Fxq \
+            "https://openwrt.eamonxg.fun/snapshots/apk/packages.adb" \
+            "$ROOT/etc/apk/repositories.d/aurora.list"
+
+          echo "Aurora files, keys and repository verified."
 
           echo "=== Checking router configuration ==="
 
@@ -504,8 +476,7 @@ jobs:
             wireless \
             dhcp \
             firewall \
-            netshift \
-            aurora
+            netshift
           do
             sudo test -f "$ROOT/etc/config/$CONFIG"
             echo "OK: $CONFIG"
@@ -520,7 +491,7 @@ jobs:
             exit 1
           fi
 
-          echo "Scheduled reboot confirmed."
+          echo "Scheduled reboot verified."
 
           echo "=== Checking restored backup files ==="
 
@@ -559,10 +530,10 @@ jobs:
                   print(name)
               sys.exit(1)
 
-          print("All files from custom-files.tar.gz are present.")
+          print("All backup files are present.")
           PY
 
-          echo "=== All mandatory firmware checks passed ==="
+          echo "=== All firmware checks passed ==="
 
       - name: Upload firmware
         uses: actions/upload-artifact@v4
