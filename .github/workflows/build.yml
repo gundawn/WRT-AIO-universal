@@ -80,6 +80,9 @@ jobs:
             exit 1
           fi
 
+          echo "=== Aurora signing keys ==="
+          ls -lh keys
+
           echo "Aurora repository configured."
 
       - name: Prepare package list
@@ -92,9 +95,16 @@ jobs:
               "kernel",
               "libc",
               "sing-box",
+          }
+
+          required = {
               "netshift",
               "luci-app-netshift",
               "luci-i18n-netshift-ru",
+              "luci-app-aurora-config",
+              "luci-i18n-aurora-config-ru",
+              "luci-theme-aurora",
+              "kmod-nft-tproxy",
           }
 
           packages = set()
@@ -120,20 +130,27 @@ jobs:
 
                   packages.add(name)
 
-          packages.add("kmod-nft-tproxy")
+          packages.update(required)
 
           with open("/tmp/packages.list", "w", encoding="utf-8") as output:
               output.write(" ".join(sorted(packages)))
 
           print(f"Prepared packages: {len(packages)}")
-          print("kmod-nft-tproxy explicitly included.")
+          print("=== Required packages ===")
 
-          if "kmod-nft-tproxy" not in packages:
-              raise SystemExit("ERROR: kmod-nft-tproxy missing from package list.")
+          for name in sorted(required):
+              print(name)
+
+          missing = required - packages
+
+          if missing:
+              raise SystemExit(
+                  "ERROR: Required packages missing: " + ", ".join(sorted(missing))
+              )
           PY
 
-          echo "=== Checking package list ==="
-          tr ' ' '\n' < /tmp/packages.list | grep -E '^(kmod-nft-tproxy|luci|luci-theme-aurora)$'
+          echo "=== Final package selection ==="
+          tr ' ' '\n' < /tmp/packages.list | sort
 
       - name: Verify AX6 profile
         run: |
@@ -160,6 +177,7 @@ jobs:
           PACKAGES="$(cat /tmp/packages.list)"
 
           echo "=== Building Redmi AX6 ==="
+          echo "=== Installing NetShift and Aurora as APK packages ==="
 
           make image \
             PROFILE="redmi_ax6" \
@@ -201,6 +219,7 @@ jobs:
             /tmp/ax6-check/root.squashfs
 
           ROOT="/tmp/ax6-check/rootfs"
+          APK_DB="$ROOT/lib/apk/db/installed"
 
           echo "=== Sing-box Extended ==="
 
@@ -217,21 +236,44 @@ jobs:
             exit 1
           fi
 
-          echo "=== NetShift ==="
+          echo "=== APK package registration ==="
+
+          REQUIRED_PACKAGES="
+          netshift
+          luci-app-netshift
+          luci-i18n-netshift-ru
+          luci-app-aurora-config
+          luci-i18n-aurora-config-ru
+          luci-theme-aurora
+          kmod-nft-tproxy
+          "
+
+          for PACKAGE in $REQUIRED_PACKAGES; do
+            if sudo grep -q "^P:$PACKAGE$" "$APK_DB"; then
+              echo "OK: $PACKAGE registered in APK."
+            else
+              echo "ERROR: $PACKAGE is not registered in APK."
+              exit 1
+            fi
+          done
+
+          echo "=== NetShift files ==="
 
           sudo test -s "$ROOT/usr/bin/netshift"
           sudo test -d "$ROOT/usr/lib/netshift"
           sudo test -f "$ROOT/etc/config/netshift"
           sudo test -f "$ROOT/etc/init.d/netshift"
+          sudo test -f "$ROOT/usr/share/luci/menu.d/luci-app-netshift.json"
+          sudo test -f "$ROOT/usr/share/rpcd/acl.d/luci-app-netshift.json"
 
-          echo "NetShift files found."
+          echo "NetShift files confirmed."
 
-          echo "=== Aurora ==="
+          echo "=== Aurora files ==="
 
           sudo test -f "$ROOT/etc/config/aurora"
           sudo test -d "$ROOT/usr/share/aurora"
 
-          echo "Aurora files found."
+          echo "Aurora files confirmed."
 
           echo "=== Cron ==="
 
@@ -246,15 +288,6 @@ jobs:
             exit 1
           fi
 
-          echo "=== LuCI NetShift ==="
-
-          sudo test -f "$ROOT/usr/share/luci/menu.d/luci-app-netshift.json"
-          sudo test -f "$ROOT/usr/share/rpcd/acl.d/luci-app-netshift.json"
-
-          echo "NetShift LuCI files found."
-
-          APK_DB="$ROOT/lib/apk/db/installed"
-
           echo "=== NSS packages ==="
 
           if sudo grep -q '^P:kmod-qca-nss-dp$' "$APK_DB"; then
@@ -267,15 +300,6 @@ jobs:
             echo "qca-ssdk registered."
           else
             echo "WARNING: qca-ssdk not registered."
-          fi
-
-          echo "=== NetShift transparent proxy module ==="
-
-          if sudo grep -q '^P:kmod-nft-tproxy$' "$APK_DB"; then
-            echo "kmod-nft-tproxy registered."
-          else
-            echo "ERROR: kmod-nft-tproxy absent from firmware."
-            exit 1
           fi
 
           echo "=== All mandatory checks passed ==="
