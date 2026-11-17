@@ -4,34 +4,35 @@ name: Build Redmi AX6 firmware
 on:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 90
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install build dependencies
+      - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            build-essential gawk gettext libncurses-dev zlib1g-dev \
-            file rsync wget zstd python3 ca-certificates
+          sudo apt-get install -y build-essential rsync file wget zstd python3
 
-      - name: Check input files
+      - name: Check backup files
         run: |
           test -s custom-files.tar.gz
           test -s packages.txt
-          echo "Backup archive and package list found."
+          sha256sum custom-files.tar.gz packages.txt
 
-      - name: Download OpenWrt ImageBuilder
+      - name: Download ImageBuilder
         run: |
           wget -O imagebuilder.tar.zst \
             https://downloads.openwrt.org/releases/25.12.6/targets/qualcommax/ipq807x/openwrt-imagebuilder-25.12.6-qualcommax-ipq807x.Linux-x86_64.tar.zst
 
           tar --zstd -xf imagebuilder.tar.zst
-
           mv openwrt-imagebuilder-25.12.6-qualcommax-ipq807x.Linux-x86_64 imagebuilder
 
       - name: Restore custom files
@@ -39,7 +40,7 @@ jobs:
           mkdir -p imagebuilder/files
           tar -xzpf custom-files.tar.gz -C imagebuilder/files
 
-      - name: Configure package repository
+      - name: Configure Aurora repository
         run: |
           cd imagebuilder
 
@@ -49,12 +50,14 @@ jobs:
 
           mkdir -p keys
 
-          if [ -d files/etc/apk/keys ]; then
-            cp -a files/etc/apk/keys/. keys/
+          if [ -d files/usr/share/aurora/feed ]; then
+            find files/usr/share/aurora/feed -maxdepth 1 \
+              -type f \( -name '*.pem' -o -name '*.pub' \) \
+              -exec cp -f {} keys/ \;
           fi
 
-          if [ -z "$(find keys -maxdepth 1 -type f -print -quit)" ]; then
-            echo "ERROR: APK signing keys were not found in the backup."
+          if ! find keys -maxdepth 1 -type f -print -quit | grep -q .; then
+            echo "ERROR: Aurora signing keys not found in backup."
             exit 1
           fi
 
@@ -62,6 +65,16 @@ jobs:
         run: |
           python3 - <<'PY'
           import re
+
+          excluded = {
+              "base-files",
+              "kernel",
+              "libc",
+              "sing-box",
+              "netshift",
+              "luci-app-netshift",
+              "luci-i18n-netshift-ru",
+          }
 
           packages = set()
 
@@ -71,25 +84,29 @@ jobs:
                   if not line:
                       continue
 
-                  package = line.split()[0]
-                  package = re.sub(r'-[0-9].*$', '', package)
+                  name = line.split()[0]
+                  name = re.sub(r'-[0-9].*$', '', name)
 
-                  if package in {"base-files", "kernel", "libc"}:
+                  if name in excluded:
                       continue
 
-                  packages.add(package)
+                  if name.startswith("lib"):
+                      continue
+
+                  packages.add(name)
 
           with open("/tmp/packages.list", "w", encoding="utf-8") as output:
               output.write(" ".join(sorted(packages)))
 
-          print(f"Prepared {len(packages)} packages.")
+          print(f"Packages selected: {len(packages)}")
+          print("Excluded custom/system packages:", ", ".join(sorted(excluded)))
           PY
 
-      - name: Verify device profile
+      - name: Verify AX6 profile
         run: |
           cd imagebuilder
-          make info > /tmp/imagebuilder-profiles.txt
-          grep -F "xiaomi_redmi-ax6" /tmp/imagebuilder-profiles.txt
+          make info > /tmp/profiles.txt
+          grep -F "xiaomi_redmi-ax6" /tmp/profiles.txt
 
       - name: Build firmware
         run: |
@@ -106,16 +123,17 @@ jobs:
         run: |
           IMAGE=$(find imagebuilder/bin/targets/qualcommax/ipq807x \
             -maxdepth 1 -type f \
-            -name '*redmi_ax6-squashfs-sysupgrade.bin' \
+            -name 'openwrt-*-redmi_ax6-squashfs-sysupgrade.bin' \
             -print -quit)
 
           if [ -z "$IMAGE" ]; then
-            echo "ERROR: Redmi AX6 sysupgrade image was not created."
+            echo "ERROR: AX6 sysupgrade image not found."
             exit 1
           fi
 
-          sha256sum "$IMAGE"
+          echo "Firmware:"
           ls -lh "$IMAGE"
+          sha256sum "$IMAGE"
 
       - name: Upload firmware
         uses: actions/upload-artifact@v4
