@@ -1,177 +1,4 @@
 
-name: Build Redmi AX6 firmware
-
-on:
-  workflow_dispatch:
-
-permissions:
-  contents: read
-
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    timeout-minutes: 90
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            build-essential \
-            rsync \
-            file \
-            wget \
-            zstd \
-            python3 \
-            squashfs-tools
-
-      - name: Check backup files
-        run: |
-          test -s custom-files.tar.gz
-          test -s packages.txt
-
-          echo "=== Backup checksums ==="
-          sha256sum custom-files.tar.gz packages.txt
-
-      - name: Download ImageBuilder
-        run: |
-          wget -O imagebuilder.tar.zst \
-            https://downloads.openwrt.org/releases/25.12.6/targets/qualcommax/ipq807x/openwrt-imagebuilder-25.12.6-qualcommax-ipq807x.Linux-x86_64.tar.zst
-
-          tar --zstd -xf imagebuilder.tar.zst
-
-          mv openwrt-imagebuilder-25.12.6-qualcommax-ipq807x.Linux-x86_64 imagebuilder
-
-          mkdir -p "$GITHUB_WORKSPACE/imagebuilder/tmp"
-
-          echo "TMPDIR=$GITHUB_WORKSPACE/imagebuilder/tmp" >> "$GITHUB_ENV"
-
-      - name: Restore custom files
-        run: |
-          mkdir -p imagebuilder/files
-
-          tar -xzpf custom-files.tar.gz -C imagebuilder/files
-
-          echo "Custom files restored."
-
-      - name: Configure Aurora repository
-        run: |
-          cd imagebuilder
-
-          FEED="https://openwrt.eamonxg.fun/snapshots/apk/packages.adb"
-
-          grep -qxF "$FEED" repositories || echo "$FEED" >> repositories
-
-          mkdir -p keys
-
-          if [ -d files/usr/share/aurora/feed ]; then
-            find files/usr/share/aurora/feed \
-              -maxdepth 1 \
-              -type f \
-              \( -name '*.pem' -o -name '*.pub' \) \
-              -exec cp -f {} keys/ \;
-          fi
-
-          if ! find keys -maxdepth 1 -type f -print -quit | grep -q .; then
-            echo "ERROR: Aurora signing keys not found."
-            exit 1
-          fi
-
-          echo "Aurora repository configured."
-
-      - name: Prepare package list
-        run: |
-          python3 - <<'PY'
-          import re
-
-          excluded = {
-              "base-files",
-              "kernel",
-              "libc",
-              "sing-box",
-              "netshift",
-              "luci-app-netshift",
-              "luci-i18n-netshift-ru",
-          }
-
-          packages = set()
-
-          with open("packages.txt", encoding="utf-8") as source:
-              for line in source:
-                  line = line.strip()
-
-                  if not line:
-                      continue
-
-                  name = line.split()[0]
-                  name = re.sub(r'-[0-9].*$', '', name)
-
-                  if name in excluded:
-                      continue
-
-                  if name.startswith(("lib", "kmod-")):
-                      continue
-
-                  packages.add(name)
-
-          with open("/tmp/packages.list", "w", encoding="utf-8") as output:
-              output.write(" ".join(sorted(packages)))
-
-          print(f"Prepared packages: {len(packages)}")
-          print("Excluded packages:", ", ".join(sorted(excluded)))
-          PY
-
-      - name: Verify AX6 profile
-        run: |
-          cd imagebuilder
-
-          mkdir -p "$PWD/tmp"
-
-          make info > /tmp/imagebuilder-profiles.txt
-
-          if ! grep -F "redmi_ax6" /tmp/imagebuilder-profiles.txt; then
-            echo "ERROR: Redmi AX6 profile not found."
-            cat /tmp/imagebuilder-profiles.txt
-            exit 1
-          fi
-
-          echo "Redmi AX6 profile found."
-
-      - name: Build firmware
-        run: |
-          cd imagebuilder
-
-          mkdir -p "$PWD/tmp"
-
-          PACKAGES="$(cat /tmp/packages.list)"
-
-          make image \
-            PROFILE="redmi_ax6" \
-            PACKAGES="$PACKAGES" \
-            FILES="files"
-
-      - name: Verify firmware image
-        run: |
-          IMAGE=$(find imagebuilder/bin/targets/qualcommax/ipq807x \
-            -maxdepth 1 \
-            -type f \
-            -name '*redmi_ax6-squashfs-sysupgrade.bin' \
-            -print -quit)
-
-          if [ -z "$IMAGE" ]; then
-            echo "ERROR: Sysupgrade image not found."
-            exit 1
-          fi
-
-          echo "=== Firmware ==="
-          ls -lh "$IMAGE"
-          sha256sum "$IMAGE"
-
-          echo "$IMAGE" > /tmp/ax6-image-path
-
       - name: Verify firmware contents
         run: |
           IMAGE="$(cat /tmp/ax6-image-path)"
@@ -183,7 +10,7 @@ jobs:
           tar -xOf "$IMAGE" sysupgrade-redmi_ax6/root \
             > /tmp/ax6-check/root.squashfs
 
-          unsquashfs \
+          sudo unsquashfs \
             -d /tmp/ax6-check/rootfs \
             /tmp/ax6-check/root.squashfs
 
@@ -197,10 +24,10 @@ jobs:
 
           echo "Sing-box SHA256: $SINGBOX_HASH"
 
-          if [ "$SINGBOX_HASH" != "ea8297584c4b624a2349409e4ac53b2fe0cc284c88b2c6dfb6f51efcf7d42195" ]; then
-            echo "WARNING: Sing-box binary differs from the original router binary."
-          else
+          if [ "$SINGBOX_HASH" = "ea8297584c4b624a2349409e4ac53b2fe0cc284c88b2c6dfb6f51efcf7d42195" ]; then
             echo "Original Sing-box Extended binary confirmed."
+          else
+            echo "WARNING: Sing-box binary differs from original."
           fi
 
           echo "=== NetShift ==="
@@ -242,34 +69,18 @@ jobs:
 
           APK_DB="$ROOT/lib/apk/db/installed"
 
-          if grep -q '^P:kmod-qca-nss-dp$' "$APK_DB"; then
-            echo "qca-nss-dp package found."
-          else
-            echo "WARNING: qca-nss-dp package not registered."
-          fi
+          grep -q '^P:kmod-qca-nss-dp$' "$APK_DB" \
+            && echo "qca-nss-dp registered." \
+            || echo "WARNING: qca-nss-dp not registered."
 
-          if grep -q '^P:kmod-qca-ssdk$' "$APK_DB"; then
-            echo "qca-ssdk package found."
-          else
-            echo "WARNING: qca-ssdk package not registered."
-          fi
+          grep -q '^P:kmod-qca-ssdk$' "$APK_DB" \
+            && echo "qca-ssdk registered." \
+            || echo "WARNING: qca-ssdk not registered."
 
           echo "=== NetShift transparent proxy module ==="
 
-          if grep -q '^P:kmod-nft-tproxy$' "$APK_DB"; then
-            echo "kmod-nft-tproxy package found."
-          else
-            echo "WARNING: kmod-nft-tproxy package is absent from APK database."
-          fi
+          grep -q '^P:kmod-nft-tproxy$' "$APK_DB" \
+            && echo "kmod-nft-tproxy registered." \
+            || echo "WARNING: kmod-nft-tproxy absent."
 
           echo "=== Verification finished ==="
-
-      - name: Upload firmware
-        uses: actions/upload-artifact@v4
-        with:
-          name: redmi-ax6-openwrt-25.12.6
-          path: |
-            imagebuilder/bin/targets/qualcommax/ipq807x/*redmi_ax6-squashfs-sysupgrade.bin
-            imagebuilder/bin/targets/qualcommax/ipq807x/*.manifest
-          if-no-files-found: error
-          retention-days: 30
