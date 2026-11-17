@@ -112,6 +112,9 @@ jobs:
         run: |
           cd imagebuilder
 
+          mkdir -p "$PWD/tmp"
+          export TMPDIR="$PWD/tmp"
+
           PACKAGES="$(cat /tmp/packages.list)"
 
           make image \
