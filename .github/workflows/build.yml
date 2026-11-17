@@ -191,9 +191,9 @@ jobs:
 
           echo "=== Sing-box Extended ==="
 
-          test -s "$ROOT/usr/bin/sing-box"
+          sudo test -s "$ROOT/usr/bin/sing-box"
 
-          SINGBOX_HASH=$(sha256sum "$ROOT/usr/bin/sing-box" | awk '{print $1}')
+          SINGBOX_HASH=$(sudo sha256sum "$ROOT/usr/bin/sing-box" | awk '{print $1}')
 
           echo "Sing-box SHA256: $SINGBOX_HASH"
 
@@ -205,27 +205,27 @@ jobs:
 
           echo "=== NetShift ==="
 
-          test -s "$ROOT/usr/bin/netshift"
-          test -d "$ROOT/usr/lib/netshift"
-          test -f "$ROOT/etc/config/netshift"
-          test -f "$ROOT/etc/init.d/netshift"
+          sudo test -s "$ROOT/usr/bin/netshift"
+          sudo test -d "$ROOT/usr/lib/netshift"
+          sudo test -f "$ROOT/etc/config/netshift"
+          sudo test -f "$ROOT/etc/init.d/netshift"
 
           echo "NetShift files found."
 
           echo "=== Aurora ==="
 
-          test -f "$ROOT/etc/config/aurora"
-          test -d "$ROOT/usr/share/aurora"
+          sudo test -f "$ROOT/etc/config/aurora"
+          sudo test -d "$ROOT/usr/share/aurora"
 
           echo "Aurora files found."
 
           echo "=== Cron ==="
 
-          test -f "$ROOT/etc/crontabs/root"
+          sudo test -f "$ROOT/etc/crontabs/root"
 
-          cat "$ROOT/etc/crontabs/root"
+          sudo cat "$ROOT/etc/crontabs/root"
 
-          if grep -F '0 5 * * * /sbin/reboot' "$ROOT/etc/crontabs/root"; then
+          if sudo grep -F '0 5 * * * /sbin/reboot' "$ROOT/etc/crontabs/root"; then
             echo "Scheduled reboot confirmed."
           else
             echo "WARNING: Scheduled reboot entry missing."
@@ -233,22 +233,22 @@ jobs:
 
           echo "=== LuCI NetShift ==="
 
-          test -f "$ROOT/usr/share/luci/menu.d/luci-app-netshift.json"
-          test -f "$ROOT/usr/share/rpcd/acl.d/luci-app-netshift.json"
+          sudo test -f "$ROOT/usr/share/luci/menu.d/luci-app-netshift.json"
+          sudo test -f "$ROOT/usr/share/rpcd/acl.d/luci-app-netshift.json"
 
           echo "NetShift LuCI files found."
 
-          echo "=== NSS packages ==="
-
           APK_DB="$ROOT/lib/apk/db/installed"
 
-          if grep -q '^P:kmod-qca-nss-dp$' "$APK_DB"; then
+          echo "=== NSS packages ==="
+
+          if sudo grep -q '^P:kmod-qca-nss-dp$' "$APK_DB"; then
             echo "qca-nss-dp registered."
           else
             echo "WARNING: qca-nss-dp not registered."
           fi
 
-          if grep -q '^P:kmod-qca-ssdk$' "$APK_DB"; then
+          if sudo grep -q '^P:kmod-qca-ssdk$' "$APK_DB"; then
             echo "qca-ssdk registered."
           else
             echo "WARNING: qca-ssdk not registered."
@@ -256,7 +256,7 @@ jobs:
 
           echo "=== NetShift transparent proxy module ==="
 
-          if grep -q '^P:kmod-nft-tproxy$' "$APK_DB"; then
+          if sudo grep -q '^P:kmod-nft-tproxy$' "$APK_DB"; then
             echo "kmod-nft-tproxy registered."
           else
             echo "WARNING: kmod-nft-tproxy absent."
