@@ -28,16 +28,8 @@ jobs:
       SINGBOX_SHA256: "ea8297584c4b624a2349409e4ac53b2fe0cc284c88b2c6dfb6f51efcf7d42195"
 
     steps:
-      # --------------------------------------------------
-      # CHECKOUT
-      # --------------------------------------------------
-
       - name: Checkout firmware configuration
         uses: actions/checkout@v4
-
-      # --------------------------------------------------
-      # DEPENDENCIES
-      # --------------------------------------------------
 
       - name: Install build dependencies
         run: |
@@ -70,10 +62,6 @@ jobs:
             squashfs-tools \
             xz-utils
 
-      # --------------------------------------------------
-      # INPUT FILES
-      # --------------------------------------------------
-
       - name: Check input files
         run: |
           set -euo pipefail
@@ -88,21 +76,13 @@ jobs:
             exit 1
           }
 
-          echo "=== Verify custom-files.tar.gz ==="
-
           echo "5d565bb39bb5963bac48a16a1d8c8355935dc11e6998378e89837a3936dc2872  custom-files.tar.gz" \
             | sha256sum -c -
-
-          echo "=== Verify packages.txt ==="
 
           echo "4ec6314d99914fc51c1ed42e65a31f858792f56286ca8d58bbee2a9b1a21b5e0  packages.txt" \
             | sha256sum -c -
 
           echo "Input files verified."
-
-      # --------------------------------------------------
-      # IMAGEBUILDER
-      # --------------------------------------------------
 
       - name: Download OpenWrt ImageBuilder
         run: |
@@ -124,10 +104,6 @@ jobs:
 
           echo "ImageBuilder extracted successfully."
 
-      # --------------------------------------------------
-      # RESTORE CONFIGURATION
-      # --------------------------------------------------
-
       - name: Restore configuration archive
         run: |
           set -euo pipefail
@@ -136,8 +112,6 @@ jobs:
 
           tar -xzpf custom-files.tar.gz \
             -C imagebuilder/files
-
-          echo "Configuration archive restored."
 
           test -x imagebuilder/files/usr/bin/sing-box || {
             echo "ERROR: sing-box binary missing from archive"
@@ -156,11 +130,7 @@ jobs:
             exit 1
           fi
 
-          echo "Sing-box Extended Lite checksum verified."
-
-      # --------------------------------------------------
-      # CLEAN OLD APK STATE AND NETSHIFT OVERLAY
-      # --------------------------------------------------
+          echo "Configuration archive and Sing-box verified."
 
       - name: Remove stale APK state and NetShift overlay files
         run: |
@@ -168,10 +138,8 @@ jobs:
 
           FILES="imagebuilder/files"
 
-          # Remove old package world with checksum pins.
           rm -f "$FILES/etc/apk/world"
 
-          # Remove copied NetShift package files.
           rm -f \
             "$FILES/usr/bin/netshift" \
             "$FILES/etc/init.d/netshift" \
@@ -181,7 +149,6 @@ jobs:
 
           rm -rf "$FILES/usr/lib/netshift"
 
-          # NetShift LuCI view can be a directory or a file.
           if [ -d "$FILES/www/luci-static/resources/view" ]; then
             find "$FILES/www/luci-static/resources/view" \
               -maxdepth 1 \
@@ -189,16 +156,11 @@ jobs:
               -exec rm -rf {} +
           fi
 
-          # Preserve NetShift configuration.
           if [ -f "$FILES/etc/config/netshift" ]; then
             echo "NetShift configuration preserved."
           fi
 
           echo "Stale APK state and copied NetShift package files removed."
-
-      # --------------------------------------------------
-      # AURORA REPOSITORY AND SIGNING KEYS
-      # --------------------------------------------------
 
       - name: Configure Aurora repository and signing keys
         run: |
@@ -210,7 +172,6 @@ jobs:
           mkdir -p "$FILES/etc/apk/keys"
           mkdir -p "$FILES/etc/apk/repositories.d"
 
-          # Copy Aurora signing keys from the configuration archive.
           for DIR in \
             "$FILES/etc/apk/keys" \
             "$FILES/usr/share/aurora/feed"
@@ -240,7 +201,6 @@ jobs:
             exit 1
           fi
 
-          # Configure tagged Aurora feed for ImageBuilder.
           TEMP_REPOSITORIES="$(mktemp)"
 
           {
@@ -250,7 +210,6 @@ jobs:
 
           mv "$TEMP_REPOSITORIES" imagebuilder/repositories
 
-          # Remove duplicate untagged Aurora feed entries from overlay.
           python3 - <<'PY'
           from pathlib import Path
 
@@ -275,21 +234,13 @@ jobs:
           PY
 
           echo "Aurora repository configured."
-
-          echo "Aurora signing keys:"
           find imagebuilder/keys -maxdepth 1 -type f -printf '%f\n'
-
-      # --------------------------------------------------
-      # DOWNLOAD PREBUILT NETSHIFT APK PACKAGES
-      # --------------------------------------------------
 
       - name: Download NetShift APK packages
         run: |
           set -euo pipefail
 
           mkdir -p imagebuilder/packages
-
-          echo "=== Download netshift ==="
 
           curl -fL --retry 3 \
             "$NETSHIFT_RELEASE_URL/netshift-0.9.12-r1.apk" \
@@ -298,16 +249,12 @@ jobs:
           echo "af84753fc38c2cbabdce2c444050309c7dbd9b2d02b4f93e8dfe1a4c8f30cf72  imagebuilder/packages/netshift-0.9.12-r1.apk" \
             | sha256sum -c -
 
-          echo "=== Download luci-app-netshift ==="
-
           curl -fL --retry 3 \
             "$NETSHIFT_RELEASE_URL/luci-app-netshift-0.9.12-r1.apk" \
             -o imagebuilder/packages/luci-app-netshift-0.9.12-r1.apk
 
           echo "de285bf9d3b93be95074e80aabf5b4a280ffe36772acff82722f7bfe42a5ec12  imagebuilder/packages/luci-app-netshift-0.9.12-r1.apk" \
             | sha256sum -c -
-
-          echo "=== Download luci-i18n-netshift-ru ==="
 
           curl -fL --retry 3 \
             "$NETSHIFT_RELEASE_URL/luci-i18n-netshift-ru-0.9.12.apk" \
@@ -316,27 +263,14 @@ jobs:
           echo "50e8eb879e2973f419ca2c62815fd2a9e7346d0c5e7c3b2c733688e64ec59319  /tmp/luci-i18n-netshift-ru.apk" \
             | sha256sum -c -
 
-          # Release asset version is 0.9.12,
-          # internal APK package version is 0.261025.30010.
-          # ImageBuilder local repository requires the internal version
-          # in the filename.
-
           mv /tmp/luci-i18n-netshift-ru.apk \
             imagebuilder/packages/luci-i18n-netshift-ru-0.261025.30010.apk
-
-          echo "=== NetShift APK files ==="
-
-          ls -lh imagebuilder/packages/
 
           test -s imagebuilder/packages/netshift-0.9.12-r1.apk
           test -s imagebuilder/packages/luci-app-netshift-0.9.12-r1.apk
           test -s imagebuilder/packages/luci-i18n-netshift-ru-0.261025.30010.apk
 
-          echo "All three NetShift APK packages downloaded and verified."
-
-      # --------------------------------------------------
-      # GENERATE COMPLETE PACKAGE LIST
-      # --------------------------------------------------
+          echo "All three NetShift APK packages verified."
 
       - name: Generate complete package list
         run: |
@@ -348,9 +282,6 @@ jobs:
 
           source = Path("packages.txt")
           output = Path("/tmp/packages.list")
-
-          if not source.is_file():
-              raise SystemExit("ERROR: packages.txt not found")
 
           excluded = {
               "base-files",
@@ -385,9 +316,6 @@ jobs:
 
               entry = fields[0]
 
-              # Greedy package-name extraction:
-              # libnghttp2-14-1.70.0-r1 -> libnghttp2-14
-
               match = re.match(
                   r"^(.+)-([0-9][A-Za-z0-9.+~_-]*)$",
                   entry
@@ -399,10 +327,8 @@ jobs:
 
               name = match.group(1)
 
-              if name in excluded:
-                  continue
-
-              packages.add(name)
+              if name not in excluded:
+                  packages.add(name)
 
           if skipped:
               print("Unparsed package entries:")
@@ -448,10 +374,6 @@ jobs:
           echo "=== Generated package list ==="
           cat /tmp/packages.list
 
-      # --------------------------------------------------
-      # VERIFY DEVICE PROFILE
-      # --------------------------------------------------
-
       - name: Verify ImageBuilder device profile
         working-directory: imagebuilder
         run: |
@@ -466,10 +388,6 @@ jobs:
           fi
 
           echo "Verified profile: $PROFILE"
-
-      # --------------------------------------------------
-      # BUILD FIRMWARE
-      # --------------------------------------------------
 
       - name: Build firmware image
         working-directory: imagebuilder
@@ -486,10 +404,6 @@ jobs:
             PACKAGES="$PACKAGES" \
             FILES="files" \
             V=s
-
-      # --------------------------------------------------
-      # VERIFY GENERATED FIRMWARE
-      # --------------------------------------------------
 
       - name: Verify generated firmware
         run: |
@@ -532,7 +446,9 @@ jobs:
           tar -xOf "$IMAGE" "$ROOT_MEMBER" \
             > /tmp/ax6-check/root.squashfs
 
-          unsquashfs \
+          # Run as root so unsquashfs can create /dev/console
+          # and other special filesystem entries.
+          sudo unsquashfs \
             -d /tmp/ax6-check/rootfs \
             /tmp/ax6-check/root.squashfs
 
@@ -543,10 +459,6 @@ jobs:
             echo "ERROR: APK installed database missing"
             exit 1
           }
-
-          # ------------------------------------------------
-          # SING-BOX EXTENDED LITE
-          # ------------------------------------------------
 
           echo "=== Verify Sing-box Extended Lite ==="
 
@@ -569,10 +481,6 @@ jobs:
 
           echo "Sing-box Extended Lite verified."
 
-          # ------------------------------------------------
-          # APK PACKAGE DATABASE
-          # ------------------------------------------------
-
           echo "=== Verify installed APK package records ==="
 
           while IFS= read -r SPEC; do
@@ -589,10 +497,6 @@ jobs:
 
           done < /tmp/packages.list
 
-          # ------------------------------------------------
-          # NETSHIFT FILES
-          # ------------------------------------------------
-
           echo "=== Verify NetShift files ==="
 
           for FILE in \
@@ -608,10 +512,6 @@ jobs:
 
             echo "OK: $FILE"
           done
-
-          # ------------------------------------------------
-          # AURORA PACKAGES
-          # ------------------------------------------------
 
           echo "=== Verify Aurora packages ==="
 
@@ -630,10 +530,6 @@ jobs:
             echo "OK: $PACKAGE"
           done
 
-          # ------------------------------------------------
-          # AURORA REPOSITORY
-          # ------------------------------------------------
-
           echo "=== Verify Aurora repository ==="
 
           AURORA_LIST="$ROOT/etc/apk/repositories.d/aurora.list"
@@ -650,10 +546,6 @@ jobs:
           }
 
           echo "Aurora feed verified."
-
-          # ------------------------------------------------
-          # AURORA WORLD ENTRIES
-          # ------------------------------------------------
 
           echo "=== Verify Aurora world entries ==="
 
@@ -680,10 +572,6 @@ jobs:
 
           echo "Aurora world entries verified."
 
-          # ------------------------------------------------
-          # PRESERVED CONFIGURATION
-          # ------------------------------------------------
-
           echo "=== Verify preserved configuration ==="
 
           if [ -f "$ROOT/etc/config/netshift" ]; then
@@ -707,10 +595,6 @@ jobs:
           sha256sum "$IMAGE" | tee /tmp/ax6-image.sha256
 
           echo "$IMAGE" > /tmp/ax6-image-path
-
-      # --------------------------------------------------
-      # UPLOAD ARTIFACT
-      # --------------------------------------------------
 
       - name: Upload firmware artifact
         uses: actions/upload-artifact@v4
