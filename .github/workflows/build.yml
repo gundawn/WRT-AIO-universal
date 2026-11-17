@@ -112,17 +112,28 @@ jobs:
                   if name in excluded:
                       continue
 
-                  if name.startswith(("lib", "kmod-")):
+                  if name.startswith("lib"):
+                      continue
+
+                  if name.startswith("kmod-") and name != "kmod-nft-tproxy":
                       continue
 
                   packages.add(name)
+
+          packages.add("kmod-nft-tproxy")
 
           with open("/tmp/packages.list", "w", encoding="utf-8") as output:
               output.write(" ".join(sorted(packages)))
 
           print(f"Prepared packages: {len(packages)}")
-          print("Excluded packages:", ", ".join(sorted(excluded)))
+          print("kmod-nft-tproxy explicitly included.")
+
+          if "kmod-nft-tproxy" not in packages:
+              raise SystemExit("ERROR: kmod-nft-tproxy missing from package list.")
           PY
+
+          echo "=== Checking package list ==="
+          tr ' ' '\n' < /tmp/packages.list | grep -E '^(kmod-nft-tproxy|luci|luci-theme-aurora)$'
 
       - name: Verify AX6 profile
         run: |
@@ -147,6 +158,8 @@ jobs:
           mkdir -p "$PWD/tmp"
 
           PACKAGES="$(cat /tmp/packages.list)"
+
+          echo "=== Building Redmi AX6 ==="
 
           make image \
             PROFILE="redmi_ax6" \
@@ -200,7 +213,8 @@ jobs:
           if [ "$SINGBOX_HASH" = "ea8297584c4b624a2349409e4ac53b2fe0cc284c88b2c6dfb6f51efcf7d42195" ]; then
             echo "Original Sing-box Extended binary confirmed."
           else
-            echo "WARNING: Sing-box binary differs from original."
+            echo "ERROR: Sing-box binary differs from original."
+            exit 1
           fi
 
           echo "=== NetShift ==="
@@ -225,10 +239,11 @@ jobs:
 
           sudo cat "$ROOT/etc/crontabs/root"
 
-          if sudo grep -F '0 5 * * * /sbin/reboot' "$ROOT/etc/crontabs/root"; then
+          if sudo grep -Fq '0 5 * * * /sbin/reboot' "$ROOT/etc/crontabs/root"; then
             echo "Scheduled reboot confirmed."
           else
-            echo "WARNING: Scheduled reboot entry missing."
+            echo "ERROR: Scheduled reboot entry missing."
+            exit 1
           fi
 
           echo "=== LuCI NetShift ==="
@@ -259,10 +274,11 @@ jobs:
           if sudo grep -q '^P:kmod-nft-tproxy$' "$APK_DB"; then
             echo "kmod-nft-tproxy registered."
           else
-            echo "WARNING: kmod-nft-tproxy absent."
+            echo "ERROR: kmod-nft-tproxy absent from firmware."
+            exit 1
           fi
 
-          echo "=== Verification finished ==="
+          echo "=== All mandatory checks passed ==="
 
       - name: Upload firmware
         uses: actions/upload-artifact@v4
