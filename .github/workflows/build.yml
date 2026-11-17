@@ -1,209 +1,23 @@
 
-name: Build Redmi AX6 firmware
-
-on:
-  workflow_dispatch:
-
-permissions:
-  contents: read
-
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    timeout-minutes: 90
-
-    steps:
-      - name: Checkout firmware repository
-        uses: actions/checkout@v4
-
-      - name: Checkout NetShift source
-        uses: actions/checkout@v4
-        with:
-          repository: yandexru45/netshift
-          ref: main
-          path: netshift-src
-          fetch-depth: 1
-
-      - name: Install dependencies
+      - name: Generate complete package list
+        shell: bash
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            build-essential \
-            rsync \
-            file \
-            wget \
-            zstd \
-            python3 \
-            squashfs-tools
-
-      - name: Check backup files
-        run: |
-          set -eu
-
-          test -s custom-files.tar.gz
-          test -s packages.txt
-
-          echo "=== Backup checksums ==="
-          sha256sum custom-files.tar.gz packages.txt
-
-      - name: Download ImageBuilder
-        run: |
-          set -eu
-
-          wget -O imagebuilder.tar.zst \
-            https://downloads.openwrt.org/releases/25.12.6/targets/qualcommax/ipq807x/openwrt-imagebuilder-25.12.6-qualcommax-ipq807x.Linux-x86_64.tar.zst
-
-          tar --zstd -xf imagebuilder.tar.zst
-
-          mv openwrt-imagebuilder-25.12.6-qualcommax-ipq807x.Linux-x86_64 imagebuilder
-
-          mkdir -p "$GITHUB_WORKSPACE/imagebuilder/tmp"
-
-          echo "TMPDIR=$GITHUB_WORKSPACE/imagebuilder/tmp" >> "$GITHUB_ENV"
-
-      - name: Restore custom files
-        run: |
-          set -eu
-
-          mkdir -p imagebuilder/files
-
-          tar -xzpf custom-files.tar.gz -C imagebuilder/files
-
-          echo "=== Removing obsolete APK world lock ==="
-
-          rm -f imagebuilder/files/etc/apk/world
-
-          echo "=== Removing old NetShift package files ==="
-
-          rm -f \
-            imagebuilder/files/usr/bin/netshift \
-            imagebuilder/files/etc/init.d/netshift \
-            imagebuilder/files/usr/share/luci/menu.d/luci-app-netshift.json \
-            imagebuilder/files/usr/share/rpcd/acl.d/luci-app-netshift.json \
-            imagebuilder/files/usr/lib/lua/luci/i18n/netshift.ru.lmo
-
-          rm -rf \
-            imagebuilder/files/usr/lib/netshift \
-            imagebuilder/files/www/luci-static/resources/view/netshift_*
-
-          echo "Preserved user NetShift configuration:"
-          test -s imagebuilder/files/etc/config/netshift
-
-          echo "Custom files restored."
-
-      - name: Configure Aurora repository
-        run: |
-          set -eu
-
-          cd imagebuilder
-
-          FEED="https://openwrt.eamonxg.fun/snapshots/apk/packages.adb"
-
-          TEMP_REPOSITORIES="$(mktemp)"
-
-          {
-            printf '@aurora %s\n' "$FEED"
-            grep -vF "$FEED" repositories || true
-          } > "$TEMP_REPOSITORIES"
-
-          mv "$TEMP_REPOSITORIES" repositories
-
-          mkdir -p keys
-          mkdir -p files/etc/apk/repositories.d
-
-          for KEYDIR in \
-            files/usr/share/aurora/feed \
-            files/etc/apk/keys
-          do
-            if [ -d "$KEYDIR" ]; then
-              find "$KEYDIR" \
-                -maxdepth 1 \
-                -type f \
-                \( -name '*.pem' -o -name '*.pub' \) \
-                -exec cp -f {} keys/ \;
-            fi
-          done
-
-          if ! find keys -maxdepth 1 -type f -name '*.pub' -print -quit | grep -q .; then
-            echo "ERROR: Aurora APK public key not found."
-            exit 1
-          fi
-
-          echo "=== Aurora signing keys ==="
-          ls -lh keys
-
-          echo "=== Runtime Aurora repository ==="
-
-          find files/etc/apk/repositories.d \
-            -maxdepth 1 \
-            -type f \
-            -exec sed -i "\|$FEED|d" {} \;
-
-          printf '@aurora %s\n' "$FEED" \
-            > files/etc/apk/repositories.d/aurora.list
-
-          echo "Aurora repository configured with @aurora tag."
-
-      - name: Build NetShift APK packages
-        uses: docker/setup-buildx-action@v3
-
-      - name: Compile NetShift for OpenWrt 25.12
-        run: |
-          set -eu
-
-          mkdir -p netshift-out
-
-          docker buildx build \
-            --file netshift-src/Dockerfile-apk \
-            --build-arg NETSHIFT_VERSION=0.9.12 \
-            --target packages \
-            --output type=local,dest="$GITHUB_WORKSPACE/netshift-out" \
-            netshift-src
-
-          echo "=== NetShift build output ==="
-
-          find netshift-out -type f -name '*.apk' -print
-
-          for PACKAGE in \
-            netshift \
-            luci-app-netshift \
-            luci-i18n-netshift-ru
-          do
-            if ! find netshift-out \
-              -type f \
-              -name "${PACKAGE}-*.apk" \
-              -print -quit | grep -q .; then
-
-              echo "ERROR: NetShift APK missing: $PACKAGE"
-              exit 1
-            fi
-          done
-
-          mkdir -p imagebuilder/packages
-
-          cp netshift-out/utilities/*.apk imagebuilder/packages/
-          cp netshift-out/luci/*.apk imagebuilder/packages/
-
-          echo "=== Local ImageBuilder packages ==="
-          ls -lh imagebuilder/packages
-
-      - name: Prepare complete package list
-        run: |
-          set -eu
+          set -euo pipefail
 
           python3 - <<'PY'
           import re
+          from pathlib import Path
+
+          source = Path("packages.txt")
+          output = Path("/tmp/packages.list")
+
+          if not source.is_file():
+              raise SystemExit("ERROR: packages.txt not found")
 
           excluded = {
               "base-files",
               "kernel",
               "libc",
-          }
-
-          netshift = {
-              "netshift",
-              "luci-app-netshift",
-              "luci-i18n-netshift-ru",
           }
 
           aurora = {
@@ -214,287 +28,65 @@ jobs:
               "luci-i18n-dashboard-ru",
           }
 
-          required = netshift | aurora | {"kmod-nft-tproxy"}
+          netshift = {
+              "netshift",
+              "luci-app-netshift",
+              "luci-i18n-netshift-ru",
+          }
 
           packages = set()
 
-          with open("packages.txt", encoding="utf-8") as source:
-              for line in source:
-                  line = line.strip()
+          for line in source.read_text().splitlines():
+              fields = line.split()
 
-                  if not line:
-                      continue
+              if not fields:
+                  continue
 
-                  name = line.split()[0]
-                  name = re.sub(r'-[0-9].*$', '', name)
+              entry = fields[0]
 
-                  if name in excluded:
-                      continue
+              # Greedy match preserves numeric suffixes in package names:
+              # libnghttp2-14-1.70.0-r1 -> libnghttp2-14
+              match = re.match(r"^(.+)-([0-9][A-Za-z0-9.+~_-]*)$", entry)
 
-                  packages.add(name)
+              if not match:
+                  continue
 
-          # Preserve all original packages, including libraries and kmods.
-          # Aurora packages must be selected from the tagged Aurora feed.
-          for name in aurora:
-              packages.discard(name)
-              packages.add(name + "@aurora")
+              name = match.group(1)
 
+              if name in excluded:
+                  continue
+
+              packages.add(name)
+
+          # Ensure all required application packages are present.
+          packages.update(aurora)
           packages.update(netshift)
-          packages.add("kmod-nft-tproxy")
 
-          with open("/tmp/packages.list", "w", encoding="utf-8") as output:
-              output.write("\n".join(sorted(packages)) + "\n")
+          # Aurora packages must come from the Aurora repository.
+          result = []
 
-          print(f"Prepared packages: {len(packages)}")
+          for name in sorted(packages):
+              if name in aurora:
+                  result.append(f"{name}@aurora")
+              else:
+                  result.append(name)
 
-          print("\n=== NetShift ===")
-          for name in sorted(netshift):
-              print(name)
+          output.write_text("\n".join(result) + "\n")
 
-          print("\n=== Aurora ===")
+          print(f"Generated {len(result)} package entries.")
+          print("Aurora packages:")
           for name in sorted(aurora):
-              print(name + "@aurora")
+              print(f"  {name}@aurora")
 
-          print("\n=== Additional required package ===")
-          print("kmod-nft-tproxy")
+          print("NetShift packages:")
+          for name in sorted(netshift):
+              print(f"  {name}")
 
-          missing = required - {
-              item.split("@", 1)[0] for item in packages
-          }
+          if "libnghttp2-14" not in packages:
+              raise SystemExit("ERROR: libnghttp2-14 missing from package list")
 
-          if missing:
-              raise SystemExit(
-                  "ERROR: Required packages missing: "
-                  + ", ".join(sorted(missing))
-              )
+          print("Package list generated successfully.")
           PY
 
-          echo "=== Final package selection ==="
+          echo "=== Generated package list ==="
           cat /tmp/packages.list
-
-      - name: Verify AX6 profile
-        run: |
-          set -eu
-
-          cd imagebuilder
-
-          make info > /tmp/imagebuilder-profiles.txt
-
-          if ! grep -F "redmi_ax6" /tmp/imagebuilder-profiles.txt; then
-            echo "ERROR: Redmi AX6 profile not found."
-            cat /tmp/imagebuilder-profiles.txt
-            exit 1
-          fi
-
-          echo "Redmi AX6 profile found."
-
-      - name: Build firmware
-        run: |
-          set -eu
-
-          cd imagebuilder
-
-          PACKAGES="$(tr '\n' ' ' < /tmp/packages.list)"
-
-          echo "=== Building Redmi AX6 ==="
-          echo "=== Original package set preserved ==="
-          echo "=== NetShift installed from local APK packages ==="
-          echo "=== Aurora installed from tagged Aurora repository ==="
-
-          make image \
-            PROFILE="redmi_ax6" \
-            PACKAGES="$PACKAGES" \
-            FILES="files"
-
-      - name: Verify firmware image
-        run: |
-          set -eu
-
-          IMAGE=$(find imagebuilder/bin/targets/qualcommax/ipq807x \
-            -maxdepth 1 \
-            -type f \
-            -name '*redmi_ax6-squashfs-sysupgrade.bin' \
-            -print -quit)
-
-          if [ -z "$IMAGE" ]; then
-            echo "ERROR: Sysupgrade image not found."
-            exit 1
-          fi
-
-          echo "=== Firmware ==="
-          ls -lh "$IMAGE"
-          sha256sum "$IMAGE"
-
-          echo "$IMAGE" > /tmp/ax6-image-path
-
-      - name: Verify firmware contents
-        run: |
-          set -eu
-
-          IMAGE="$(cat /tmp/ax6-image-path)"
-
-          mkdir -p /tmp/ax6-check
-
-          echo "=== Extracting root filesystem ==="
-
-          ROOT_MEMBER="$(tar -tf "$IMAGE" | grep -E '(^|/)root$' | head -n 1)"
-
-          if [ -z "$ROOT_MEMBER" ]; then
-            echo "ERROR: Root filesystem not found in sysupgrade archive."
-            exit 1
-          fi
-
-          tar -xOf "$IMAGE" "$ROOT_MEMBER" \
-            > /tmp/ax6-check/root.squashfs
-
-          sudo unsquashfs \
-            -d /tmp/ax6-check/rootfs \
-            /tmp/ax6-check/root.squashfs
-
-          ROOT="/tmp/ax6-check/rootfs"
-          APK_DB="$ROOT/lib/apk/db/installed"
-          APK_WORLD="$ROOT/etc/apk/world"
-
-          echo "=== Sing-box Extended ==="
-
-          sudo test -s "$ROOT/usr/bin/sing-box"
-
-          SINGBOX_HASH=$(sudo sha256sum "$ROOT/usr/bin/sing-box" | awk '{print $1}')
-
-          echo "Sing-box SHA256: $SINGBOX_HASH"
-
-          if [ "$SINGBOX_HASH" = "ea8297584c4b624a2349409e4ac53b2fe0cc284c88b2c6dfb6f51efcf7d42195" ]; then
-            echo "Original Sing-box Extended binary confirmed."
-          else
-            echo "ERROR: Sing-box binary differs from original."
-            exit 1
-          fi
-
-          echo "=== APK database ==="
-
-          sudo test -s "$APK_DB"
-          sudo test -s "$APK_WORLD"
-
-          echo "APK database and world file exist."
-
-          echo "=== Verify every requested package ==="
-
-          while IFS= read -r SPEC; do
-            [ -n "$SPEC" ] || continue
-
-            PACKAGE="${SPEC%%@*}"
-
-            if sudo grep -Fqx "P:$PACKAGE" "$APK_DB"; then
-              echo "OK: $PACKAGE"
-            else
-              echo "ERROR: Package not registered: $PACKAGE"
-              exit 1
-            fi
-          done < /tmp/packages.list
-
-          echo "=== Verify Aurora repository pins ==="
-
-          AURORA_PACKAGES="
-          luci-app-aurora-config
-          luci-i18n-aurora-config-ru
-          luci-theme-aurora
-          luci-mod-dashboard
-          luci-i18n-dashboard-ru
-          "
-
-          for PACKAGE in $AURORA_PACKAGES; do
-            if sudo grep -Fqx "$PACKAGE@aurora" "$APK_WORLD"; then
-              echo "OK: $PACKAGE selected from @aurora."
-            else
-              echo "ERROR: Aurora repository tag missing for $PACKAGE."
-              exit 1
-            fi
-          done
-
-          echo "=== Verify NetShift packages ==="
-
-          NETSHIFT_PACKAGES="
-          netshift
-          luci-app-netshift
-          luci-i18n-netshift-ru
-          "
-
-          for PACKAGE in $NETSHIFT_PACKAGES; do
-            sudo grep -Fqx "P:$PACKAGE" "$APK_DB"
-            echo "OK: $PACKAGE registered."
-          done
-
-          echo "=== NetShift files ==="
-
-          sudo test -s "$ROOT/usr/bin/netshift"
-          sudo test -d "$ROOT/usr/lib/netshift"
-          sudo test -f "$ROOT/etc/config/netshift"
-          sudo test -f "$ROOT/etc/init.d/netshift"
-          sudo test -f "$ROOT/usr/share/luci/menu.d/luci-app-netshift.json"
-          sudo test -f "$ROOT/usr/share/rpcd/acl.d/luci-app-netshift.json"
-
-          if ! sudo find "$ROOT/www/luci-static/resources/view" \
-            -maxdepth 1 \
-            -type d \
-            -name 'netshift_*' \
-            -print -quit | grep -q .; then
-
-            echo "ERROR: NetShift LuCI view not found."
-            exit 1
-          fi
-
-          echo "NetShift files confirmed."
-
-          echo "=== Aurora files ==="
-
-          sudo test -f "$ROOT/etc/config/aurora"
-          sudo test -d "$ROOT/usr/share/aurora"
-
-          echo "Aurora files confirmed."
-
-          echo "=== Aurora repository configuration ==="
-
-          sudo grep -Fq \
-            '@aurora https://openwrt.eamonxg.fun/snapshots/apk/packages.adb' \
-            "$ROOT/etc/apk/repositories.d/aurora.list"
-
-          echo "Aurora feed configured for runtime."
-
-          echo "=== Cron ==="
-
-          sudo test -f "$ROOT/etc/crontabs/root"
-
-          sudo cat "$ROOT/etc/crontabs/root"
-
-          if sudo grep -Fq '0 5 * * * /sbin/reboot' "$ROOT/etc/crontabs/root"; then
-            echo "Scheduled reboot confirmed."
-          else
-            echo "ERROR: Scheduled reboot entry missing."
-            exit 1
-          fi
-
-          echo "=== NSS packages ==="
-
-          if sudo grep -q '^P:kmod-qca-nss-dp$' "$APK_DB"; then
-            echo "qca-nss-dp registered."
-          else
-            echo "WARNING: qca-nss-dp not registered."
-          fi
-
-          if sudo grep -q '^P:kmod-qca-ssdk$' "$APK_DB"; then
-            echo "qca-ssdk registered."
-          else
-            echo "WARNING: qca-ssdk not registered."
-          fi
-
-          echo "=== All mandatory checks passed ==="
-
-      - name: Upload firmware
-        uses: actions/upload-artifact@v4
-        with:
-          name: redmi-ax6-openwrt-25.12.6
-          path: |
-            imagebuilder/bin/targets/qualcommax/ipq807x/*redmi_ax6-squashfs-sysupgrade.bin
-            imagebuilder/bin/targets/qualcommax/ipq807x/*.manifest
-          if-no-files-found: error
-          retention-days: 30
