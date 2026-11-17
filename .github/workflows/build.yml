@@ -1,0 +1,43 @@
+
+name: Build Redmi AX6 firmware
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Prepare environment
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential ccache ecj fastjar file g++ gawk \
+            gettext git java-propose-classpath libelf-dev libncurses-dev \
+            libssl-dev python3 python3-distutils python3-setuptools \
+            python3-dev rsync unzip wget zlib1g-dev
+
+      - name: Download ImageBuilder
+        run: |
+          wget https://downloads.openwrt.org/releases/25.12.6/targets/qualcommax/ipq807x/openwrt-imagebuilder-25.12.6-qualcommax-ipq807x.Linux-x86_64.tar.zst
+          tar --zstd -xf openwrt-imagebuilder-25.12.6-qualcommax-ipq807x.Linux-x86_64.tar.zst
+          mv openwrt-imagebuilder-25.12.6-qualcommax-ipq807x.Linux-x86_64 imagebuilder
+
+      - name: Prepare custom files
+        run: |
+          mkdir -p imagebuilder/files
+          tar -xzf custom-files.tar.gz -C imagebuilder/files
+
+      - name: Build firmware
+        run: |
+          cd imagebuilder
+          make image PROFILE="xiaomi_redmi-ax6" FILES="files" PACKAGES="luci"
+
+      - name: Upload firmware
+        uses: actions/upload-artifact@v4
+        with:
+          name: redmi-ax6-firmware
+          path: imagebuilder/bin/targets/qualcommax/ipq807x/*.bin
+          if-no-files-found: error
