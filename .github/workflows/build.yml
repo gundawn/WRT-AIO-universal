@@ -35,6 +35,9 @@ jobs:
           tar --zstd -xf imagebuilder.tar.zst
           mv openwrt-imagebuilder-25.12.6-qualcommax-ipq807x.Linux-x86_64 imagebuilder
 
+          mkdir -p "$GITHUB_WORKSPACE/imagebuilder/tmp"
+          echo "TMPDIR=$GITHUB_WORKSPACE/imagebuilder/tmp" >> "$GITHUB_ENV"
+
       - name: Restore custom files
         run: |
           mkdir -p imagebuilder/files
@@ -57,7 +60,7 @@ jobs:
           fi
 
           if ! find keys -maxdepth 1 -type f -print -quit | grep -q .; then
-            echo "ERROR: Aurora signing keys not found in backup."
+            echo "ERROR: Aurora signing keys not found."
             exit 1
           fi
 
@@ -90,7 +93,7 @@ jobs:
                   if name in excluded:
                       continue
 
-                  if name.startswith("lib"):
+                  if name.startswith(("lib", "kmod-")):
                       continue
 
                   packages.add(name)
@@ -98,27 +101,33 @@ jobs:
           with open("/tmp/packages.list", "w", encoding="utf-8") as output:
               output.write(" ".join(sorted(packages)))
 
-          print(f"Packages selected: {len(packages)}")
-          print("Excluded custom/system packages:", ", ".join(sorted(excluded)))
+          print(f"Prepared {len(packages)} packages.")
+          print("Excluded:", ", ".join(sorted(excluded)))
           PY
 
       - name: Verify AX6 profile
         run: |
           cd imagebuilder
-          make info > /tmp/profiles.txt
-          grep -F "xiaomi_redmi-ax6" /tmp/profiles.txt
+
+          mkdir -p "$PWD/tmp"
+
+          make info > /tmp/imagebuilder-profiles.txt
+
+          if ! grep -F "redmi_ax6" /tmp/imagebuilder-profiles.txt; then
+            echo "ERROR: redmi_ax6 profile not found."
+            cat /tmp/imagebuilder-profiles.txt
+            exit 1
+          fi
 
       - name: Build firmware
         run: |
           cd imagebuilder
 
           mkdir -p "$PWD/tmp"
-          export TMPDIR="$PWD/tmp"
-
           PACKAGES="$(cat /tmp/packages.list)"
 
           make image \
-            PROFILE="xiaomi_redmi-ax6" \
+            PROFILE="redmi_ax6" \
             PACKAGES="$PACKAGES" \
             FILES="files"
 
@@ -126,7 +135,7 @@ jobs:
         run: |
           IMAGE=$(find imagebuilder/bin/targets/qualcommax/ipq807x \
             -maxdepth 1 -type f \
-            -name 'openwrt-*-redmi_ax6-squashfs-sysupgrade.bin' \
+            -name '*redmi_ax6-squashfs-sysupgrade.bin' \
             -print -quit)
 
           if [ -z "$IMAGE" ]; then
