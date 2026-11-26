@@ -3,8 +3,7 @@
 set -eu
 
 # ============================================================
-# Xiaomi AX3000T RD03 — NFC Wi-Fi WSC installer
-# OpenWrt 25.12.x / MediaTek Filogic
+# Xiaomi AX3000T RD03 — NFC installer and synchronization
 # ============================================================
 
 BIN="/usr/sbin/xinfc-wsc"
@@ -15,324 +14,337 @@ CRON="/etc/crontabs/root"
 
 ARCHIVE="/tmp/xinfc-gui-openwrt.tar.gz"
 WORK="/tmp/xinfc-install"
-SOURCE_URL="https://ghproxy.net/https://github.com/HuntezWOTB/xinfc-gui-openwrt/archive/refs/heads/main.tar.gz"
 
-BIN_SHA256="17aa90aba1c85b3f5763f64cc61753262b7080c4f27182f80ee2c7bc3259d924"
+URL="https://ghproxy.net/https://github.com/HuntezWOTB/xinfc-gui-openwrt/archive/refs/heads/main.tar.gz"
+EXPECTED_SHA256="17aa90aba1c85b3f5763f64cc61753262b7080c4f27182f80ee2c7bc3259d924"
 
-echo "================================================"
-echo " Xiaomi AX3000T — Активация NFC"
-echo "================================================"
+log() {
+    echo "[NFC] $*"
+}
 
-# ------------------------------------------------------------
-# 1. Dependencies
-# ------------------------------------------------------------
-
-echo "[1/7] Установка зависимостей"
-
-apk add libstdcpp i2c-tools
-
-# ------------------------------------------------------------
-# 2. Download and install xinfc-wsc
-# ------------------------------------------------------------
-
-echo "[2/7] Установка драйвера"
-
-if [ ! -x "$BIN" ]; then
-    rm -rf "$WORK"
-    mkdir -p "$WORK"
-
-    wget -O "$ARCHIVE" "$SOURCE_URL"
-    tar -xzf "$ARCHIVE" -C "$WORK"
-
-    FOUND_BIN="$WORK/xinfc-gui-openwrt-main/bin/xinfc-wsc-aarch64"
-
-    [ -s "$FOUND_BIN" ] || {
-        echo "ОШИБКА! Файл не найден"
-        exit 1
-    }
-
-    ACTUAL_HASH="$(sha256sum "$FOUND_BIN" | awk '{print $1}')"
-
-    [ "$ACTUAL_HASH" = "$BIN_SHA256" ] || {
-        echo "ОШИБКА! Контрольные суммы файла не совпадают"
-        exit 1
-    }
-
-    cp "$FOUND_BIN" "$BIN"
-    chmod 755 "$BIN"
-fi
-
-# ------------------------------------------------------------
-# 3. NFC chip detection and backup preservation
-# ------------------------------------------------------------
-
-echo "[3/7] Проверка чипа"
-
-mkdir -p "$DIR"
-
-i2cdetect -y 0 | grep -Eq '(^|[[:space:]])57([[:space:]]|$)' || {
-    echo "ОШИБКА! NFC-чип 0x57 не обнаружен"
+die() {
+    log "ОШИБКА: $*"
     exit 1
 }
 
-if [ ! -s "$DIR/nfc_ndef_backup.bin" ] &&
-   [ -s /tmp/xinfc-src/nfc_ndef_backup.bin ]; then
-    cp /tmp/xinfc-src/nfc_ndef_backup.bin "$DIR/nfc_ndef_backup.bin"
-    chmod 600 "$DIR/nfc_ndef_backup.bin"
+# ------------------------------------------------------------
+# Dependencies
+# ------------------------------------------------------------
+
+command -v apk >/dev/null 2>&1 || die "Не найден apk."
+command -v sha256sum >/dev/null 2>&1 || die "Не найден sha256sum."
+command -v uci >/dev/null 2>&1 || die "Не найден uci."
+
+log "Установка зависимостей..."
+apk add libstdcpp i2c-tools
+
+command -v i2cdetect >/dev/null 2>&1 || die "Не установлен i2c-tools."
+
+# ------------------------------------------------------------
+# Download and verify utility
+# ------------------------------------------------------------
+
+rm -rf "$WORK"
+mkdir -p "$WORK"
+
+log "Загрузка исходников xinfc..."
+wget -O "$ARCHIVE" "$URL" || die "Не удалось скачать архив."
+
+tar -xzf "$ARCHIVE" -C "$WORK" --strip-components=1 \
+    || die "Не удалось распаковать архив."
+
+SOURCE_BIN="$WORK/bin/xinfc-wsc-aarch64"
+
+[ -f "$SOURCE_BIN" ] || die "В архиве отсутствует xinfc-wsc-aarch64."
+
+DOWNLOADED_SHA256="$(sha256sum "$SOURCE_BIN" | awk '{print $1}')"
+
+[ "$DOWNLOADED_SHA256" = "$EXPECTED_SHA256" ] \
+    || die "SHA256 бинарника не совпадает с ожидаемым. Установка остановлена."
+
+mkdir -p "$DIR"
+
+# ------------------------------------------------------------
+# Preserve original NFC backup
+# ------------------------------------------------------------
+
+BACKUP="$DIR/nfc_ndef_backup.bin"
+
+if [ ! -s "$BACKUP" ]; then
+    if [ -s "$WORK/nfc_ndef_backup.bin" ]; then
+        cp "$WORK/nfc_ndef_backup.bin" "$BACKUP"
+    elif [ -s /tmp/xinfc-src/nfc_ndef_backup.bin ]; then
+        cp /tmp/xinfc-src/nfc_ndef_backup.bin "$BACKUP"
+    else
+        die "Не найдена исходная nfc_ndef_backup.bin. Запись NFC запрещена."
+    fi
+
+    chmod 600 "$BACKUP"
+    log "Исходная резервная копия NFC установлена."
+else
+    log "Существующая резервная копия NFC сохранена без изменений."
 fi
 
+[ -s "$BACKUP" ] || die "Резервная копия NFC отсутствует или пуста."
+
 # ------------------------------------------------------------
-# 4. Create synchronization script
+# Install verified binary
 # ------------------------------------------------------------
 
-echo "[4/7] Создание скрипта синхронизации"
+cp "$SOURCE_BIN" "$BIN"
+chmod 755 "$BIN"
 
-cat > "$SYNC" <<'SYNC'
+INSTALLED_SHA256="$(sha256sum "$BIN" | awk '{print $1}')"
+
+[ "$INSTALLED_SHA256" = "$EXPECTED_SHA256" ] \
+    || die "Контрольная сумма установленного бинарника не совпадает."
+
+log "xinfc-wsc установлен и проверен."
+
+# ------------------------------------------------------------
+# Check NFC chip
+# ------------------------------------------------------------
+
+log "Проверка I2C-шины 0, адреса 0x57..."
+
+I2C_SCAN="$(i2cdetect -y 0 2>/dev/null || true)"
+
+printf '%s\n' "$I2C_SCAN" |
+    grep -Eq '(^|[[:space:]])57([[:space:]]|$)' \
+    || die "NFC-чип по адресу 0x57 на I2C-шине 0 не обнаружен."
+
+log "NFC-чип обнаружен."
+
+# ------------------------------------------------------------
+# Create synchronization script
+# ------------------------------------------------------------
+
+cat > "$SYNC" <<'SYNC_EOF'
 #!/bin/sh
+set -eu
 
 BIN="/usr/sbin/xinfc-wsc"
 DIR="/etc/xinfc"
-STATE="$DIR/current.sha256"
 BACKUP="$DIR/nfc_ndef_backup.bin"
+STATE="$DIR/current.sha256"
 LOCK="/var/lock/nfc-sync.lock"
 
-mkdir -p "$DIR" /var/lock
+log() {
+    logger -t nfc-sync "$*"
+}
+
+fail() {
+    log "ОШИБКА: $*"
+    exit 1
+}
+
+# Prevent parallel execution
+mkdir -p /var/lock
 
 if ! mkdir "$LOCK" 2>/dev/null; then
     exit 0
 fi
 
-trap 'rmdir "$LOCK" 2>/dev/null' EXIT INT TERM
+trap 'rmdir "$LOCK" 2>/dev/null || true' EXIT INT TERM
+
+# Verify required files before any NFC write
+[ -x "$BIN" ] || fail "Не найден исполняемый xinfc-wsc."
+[ -s "$BACKUP" ] || fail "Нет исходной резервной копии NFC."
 
 # ------------------------------------------------------------
-# Find active AP sections for radio0 and radio1
+# Find first enabled AP section for a radio
 # ------------------------------------------------------------
 
-RADIO0=""
-RADIO1=""
+find_ap() {
+    wanted_radio="$1"
 
-for section in $(uci -q show wireless |
-    sed -n 's/^wireless\.\([^=]*\)=wifi-iface$/\1/p'); do
+    for section in $(uci -q show wireless |
+        sed -n 's/^wireless\.\([^.=]*\)=wifi-iface$/\1/p'); do
 
-    MODE="$(uci -q get "wireless.$section.mode" || true)"
-    DEVICE="$(uci -q get "wireless.$section.device" || true)"
-    DISABLED="$(uci -q get "wireless.$section.disabled" || true)"
+        device="$(uci -q get "wireless.$section.device" 2>/dev/null || true)"
+        mode="$(uci -q get "wireless.$section.mode" 2>/dev/null || true)"
+        disabled="$(uci -q get "wireless.$section.disabled" 2>/dev/null || true)"
 
-    [ "$MODE" = "ap" ] || continue
-    [ "$DISABLED" = "1" ] && continue
+        [ "$device" = "$wanted_radio" ] || continue
+        [ "$mode" = "ap" ] || continue
+        [ "$disabled" = "1" ] && continue
 
-    case "$DEVICE" in
-        radio0)
-            [ -n "$RADIO0" ] || RADIO0="$section"
-            ;;
-        radio1)
-            [ -n "$RADIO1" ] || RADIO1="$section"
-            ;;
-    esac
-done
+        printf '%s' "$section"
+        return 0
+    done
 
-[ -n "$RADIO0" ] || {
-    logger -t nfc-sync "Активная точка доступа radio0 не обнаружена"
-    exit 1
+    return 1
 }
 
-SSID0="$(uci -q get "wireless.$RADIO0.ssid" || true)"
-KEY0="$(uci -q get "wireless.$RADIO0.key" || true)"
-ENC0="$(uci -q get "wireless.$RADIO0.encryption" || true)"
+SEC0="$(find_ap radio0)" || fail "Не найден активный AP на radio0."
 
-[ -n "$SSID0" ] || {
-    logger -t nfc-sync "SSID radio0 не обнаружен"
-    exit 1
-}
+SEC1="$(find_ap radio1 2>/dev/null || true)"
 
-[ "${#SSID0}" -le 32 ] || {
-    logger -t nfc-sync "SSID превышает 32 символа"
-    exit 1
-}
+SSID0="$(uci -q get "wireless.$SEC0.ssid" 2>/dev/null || true)"
+KEY0="$(uci -q get "wireless.$SEC0.key" 2>/dev/null || true)"
+ENC0="$(uci -q get "wireless.$SEC0.encryption" 2>/dev/null || true)"
 
-# ------------------------------------------------------------
-# Validate WPA2 key
-# ------------------------------------------------------------
+[ -n "$SSID0" ] || fail "У radio0 пустой SSID."
 
-valid_wpa2_key() {
-    [ "${#1}" -ge 8 ] && [ "${#1}" -le 63 ]
-}
+SSID_BYTES="$(printf '%s' "$SSID0" | wc -c | tr -d ' ')"
+
+[ "$SSID_BYTES" -le 32 ] || fail "SSID radio0 превышает 32 байта."
 
 # ------------------------------------------------------------
-# Process radio0
+# Determine target encryption from password
 # ------------------------------------------------------------
 
-case "$ENC0" in
+if [ -n "$KEY0" ]; then
+    KEY_BYTES="$(printf '%s' "$KEY0" | wc -c | tr -d ' ')"
 
-    psk2)
-        valid_wpa2_key "$KEY0" || {
-            logger -t nfc-sync "Некорректный пароль WPA2 на radio0"
-            exit 1
-        }
-        ;;
-
-    none)
-        KEY0=""
-        ;;
-
-    *)
-        logger -t nfc-sync "radio0: режим $ENC0 не поддерживается"
-
-        valid_wpa2_key "$KEY0" || {
-            logger -t nfc-sync "radio0: существующий пароль не подходит для WPA2. Настройки не изменены"
-            exit 1
-        }
-
-        uci set "wireless.$RADIO0.encryption=psk2"
-
-        # ----------------------------------------------------
-        # Process radio1 only if SSID and password match
-        # ----------------------------------------------------
-
-        if [ -n "$RADIO1" ]; then
-            SSID1="$(uci -q get "wireless.$RADIO1.ssid" || true)"
-            KEY1="$(uci -q get "wireless.$RADIO1.key" || true)"
-            ENC1="$(uci -q get "wireless.$RADIO1.encryption" || true)"
-
-            if [ "$SSID0" = "$SSID1" ] && [ "$KEY0" = "$KEY1" ]; then
-
-                if [ "$ENC1" != "psk2" ]; then
-                    uci set "wireless.$RADIO1.encryption=psk2"
-                    logger -t nfc-sync "radio1: совпадающая сеть переведена на WPA2"
-                fi
-
-            else
-                logger -t nfc-sync "radio1: SSID или пароль отличаются, настройки не изменены"
-            fi
-        fi
-
-        uci commit wireless
-
-        logger -t nfc-sync "radio0 переведён на WPA2. Применение настроек"
-
-        wifi reload
-
-        # Запись NFC будет выполнена следующим запуском.
-        exit 0
-        ;;
-
-esac
+    if [ "$KEY_BYTES" -ge 8 ] && [ "$KEY_BYTES" -le 63 ]; then
+        TARGET_ENC="psk2"
+    elif [ "$KEY_BYTES" -eq 64 ] &&
+         printf '%s' "$KEY0" | grep -Eq '^[0-9A-Fa-f]{64}$'; then
+        TARGET_ENC="psk2"
+    else
+        fail "Пароль radio0 не подходит для WPA2. Настройки не изменены."
+    fi
+else
+    TARGET_ENC="none"
+fi
 
 # ------------------------------------------------------------
-# Check NFC profile changes
+# Check radio1 matching conditions
 # ------------------------------------------------------------
 
-HASH="$(printf '%s\0%s\0%s' "$SSID0" "$KEY0" "$ENC0" |
-    sha256sum | awk '{print $1}')"
+MATCH_RADIO1=0
 
-OLD_HASH="$(cat "$STATE" 2>/dev/null || true)"
+if [ -n "$SEC1" ]; then
+    SSID1="$(uci -q get "wireless.$SEC1.ssid" 2>/dev/null || true)"
+    KEY1="$(uci -q get "wireless.$SEC1.key" 2>/dev/null || true)"
 
-if [ "$HASH" = "$OLD_HASH" ]; then
+    if [ "$SSID1" = "$SSID0" ] && [ "$KEY1" = "$KEY0" ]; then
+        MATCH_RADIO1=1
+    fi
+fi
+
+# ------------------------------------------------------------
+# Normalize only encryption settings
+# ------------------------------------------------------------
+
+CHANGED=0
+
+if [ "$ENC0" != "$TARGET_ENC" ]; then
+    uci -q set "wireless.$SEC0.encryption=$TARGET_ENC"
+    CHANGED=1
+    log "radio0: режим encryption будет изменён на $TARGET_ENC."
+fi
+
+if [ "$MATCH_RADIO1" -eq 1 ]; then
+    ENC1="$(uci -q get "wireless.$SEC1.encryption" 2>/dev/null || true)"
+
+    if [ "$ENC1" != "$TARGET_ENC" ]; then
+        uci -q set "wireless.$SEC1.encryption=$TARGET_ENC"
+        CHANGED=1
+        log "radio1: SSID и пароль совпадают с radio0; режим будет изменён на $TARGET_ENC."
+    fi
+else
+    if [ -n "$SEC1" ]; then
+        log "radio1: SSID или пароль отличаются; настройки radio1 не изменяются."
+    fi
+fi
+
+# Commit only when necessary
+if [ "$CHANGED" -eq 1 ]; then
+    uci -q commit wireless || fail "Не удалось сохранить настройки wireless."
+    log "Изменения wireless сохранены. Перезагрузка Wi-Fi."
+
+    wifi reload || fail "Не удалось перезагрузить Wi-Fi."
     exit 0
 fi
 
-logger -t nfc-sync "Обновление NFC-профиля radio0 (режим: $ENC0)"
+# ------------------------------------------------------------
+# Calculate profile hash
+# ------------------------------------------------------------
 
-cd "$DIR" || exit 1
+PROFILE_HASH="$(
+    printf '%s\n%s\n%s\n' "$SSID0" "$KEY0" "$TARGET_ENC" |
+        sha256sum | awk '{print $1}'
+)"
+
+OLD_HASH="$(cat "$STATE" 2>/dev/null || true)"
+
+if [ "$PROFILE_HASH" = "$OLD_HASH" ]; then
+    exit 0
+fi
 
 # ------------------------------------------------------------
 # Write NFC profile
 # ------------------------------------------------------------
 
-if "$BIN" 0 0x57 "$SSID0" "$KEY0" "$ENC0"; then
+log "Обновление NFC-профиля."
 
-    [ -s "$BACKUP" ] || {
-        logger -t nfc-sync "WARNING: оригинальная резервная копия NFC отсутствует"
-        exit 1
-    }
+cd "$DIR"
 
-    printf '%s\n' "$HASH" > "$STATE.tmp"
-    mv "$STATE.tmp" "$STATE"
-
-    logger -t nfc-sync "NFC-профиль успешно записан"
-
+if "$BIN" 0 0x57 "$SSID0" "$KEY0" "$TARGET_ENC"; then
+    printf '%s\n' "$PROFILE_HASH" > "$STATE"
+    chmod 600 "$STATE"
+    log "NFC-профиль успешно обновлён."
 else
-    logger -t nfc-sync "Ошибка записи NFC"
-    exit 1
+    fail "xinfc-wsc завершился с ошибкой. Хеш не обновлён."
 fi
-SYNC
+SYNC_EOF
 
-chmod 700 "$SYNC"
+chmod 755 "$SYNC"
 
 # ------------------------------------------------------------
-# 5. Create procd service
+# Create init service
 # ------------------------------------------------------------
 
-echo "[5/7] Создание службы"
-
-cat > "$SERVICE" <<'SERVICE'
+cat > "$SERVICE" <<'SERVICE_EOF'
 #!/bin/sh /etc/rc.common
 
-USE_PROCD=1
 START=99
+USE_PROCD=1
 
 start_service() {
     /usr/bin/nfc-sync.sh
 }
 
+service_triggers() {
+    procd_add_reload_trigger "wireless"
+}
+
 reload_service() {
     /usr/bin/nfc-sync.sh
 }
-
-service_triggers() {
-    procd_open_trigger
-    procd_add_config_trigger "config.change" "wireless" /etc/init.d/nfc-sync reload
-    procd_close_trigger
-}
-SERVICE
+SERVICE_EOF
 
 chmod 755 "$SERVICE"
 
 # ------------------------------------------------------------
-# 6. Configure cron and autostart
+# Cron: synchronize every minute
 # ------------------------------------------------------------
-
-echo "[6/7] Настройка планировщика"
 
 touch "$CRON"
 
-if ! grep -Fq '/usr/bin/nfc-sync.sh' "$CRON"; then
-    echo '* * * * * /usr/bin/nfc-sync.sh >/dev/null 2>&1' >> "$CRON"
+CRON_LINE="* * * * * /usr/bin/nfc-sync.sh >/dev/null 2>&1"
+
+if ! grep -Fqx "$CRON_LINE" "$CRON"; then
+    echo "$CRON_LINE" >> "$CRON"
 fi
 
-[ -x /etc/init.d/cron ] || {
-    echo "ОШИБКА! Планировщик недоступен"
-    exit 1
-}
+# ------------------------------------------------------------
+# Enable services and perform initial sync
+# ------------------------------------------------------------
 
 /etc/init.d/cron enable
 /etc/init.d/cron restart
 
 /etc/init.d/nfc-sync enable
-
-# ------------------------------------------------------------
-# 7. First synchronization
-# ------------------------------------------------------------
-
-echo "[7/7] Синхронизация Wi-Fi с NFC"
-
 /etc/init.d/nfc-sync start
 
 # ------------------------------------------------------------
-# Complete
+# Cleanup
 # ------------------------------------------------------------
 
 rm -rf "$WORK"
 rm -f "$ARCHIVE"
 
-echo
-echo "================================================"
-echo " УСТАНОВКА ЗАВЕРШЕНА!"
-echo "================================================"
-echo "Бинарник:        $BIN"
-echo "Синхронизация:   $SYNC"
-echo "Служба:          $SERVICE"
-echo "Резервная копия: $BACKUP"
-echo "Cron:            каждую минуту"
-echo
-echo "================================================"
+log "Установка NFC завершена."
