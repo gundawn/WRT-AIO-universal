@@ -149,7 +149,6 @@ jobs:
         run: |
           set -euo pipefail
           python3 - <<'PY'
-          import re
           from pathlib import Path
           source = Path("packages.txt")
           output = Path("/tmp/packages.list")
@@ -166,12 +165,8 @@ jobs:
               entry = line.split('>')[0].strip()
               if not entry:
                   continue
-              # Пытаемся отрезать версию, если она есть
-              match = re.match(r"^(.+)-([0-9][A-Za-z0-9.+~_-]*)$", entry)
-              if match:
-                  name = match.group(1)
-              else:
-                  name = entry  # версии нет — считаем это именем пакета
+              # Версий в файле нет — считаем строку именем пакета как есть
+              name = entry
               if name not in excluded:
                   packages.add(name)
 
