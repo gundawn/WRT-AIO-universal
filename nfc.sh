@@ -42,7 +42,6 @@ if [ ! -x "$BIN" ]; then
     mkdir -p "$WORK"
 
     wget -O "$ARCHIVE" "$SOURCE_URL"
-
     tar -xzf "$ARCHIVE" -C "$WORK"
 
     FOUND_BIN="$WORK/xinfc-gui-openwrt-main/bin/xinfc-wsc-aarch64"
@@ -63,8 +62,6 @@ if [ ! -x "$BIN" ]; then
     chmod 755 "$BIN"
 fi
 
-"$BIN" 2>&1 | head -5 || true
-
 # ------------------------------------------------------------
 # 3. NFC chip detection and backup preservation
 # ------------------------------------------------------------
@@ -74,11 +71,10 @@ echo "[3/7] Проверка чипа"
 mkdir -p "$DIR"
 
 i2cdetect -y 0 | grep -Eq '(^|[[:space:]])57([[:space:]]|$)' || {
-    echo "ОШИБКА! NFC-чип 0x57 не обнаружен на шине l2s"
+    echo "ОШИБКА! NFC-чип 0x57 не обнаружен"
     exit 1
 }
 
-# Preserve an existing original backup if available.
 if [ ! -s "$DIR/nfc_ndef_backup.bin" ] &&
    [ -s /tmp/xinfc-src/nfc_ndef_backup.bin ]; then
     cp /tmp/xinfc-src/nfc_ndef_backup.bin "$DIR/nfc_ndef_backup.bin"
@@ -142,25 +138,52 @@ ENCRYPTION="$(uci -q get "wireless.$SELECTED.encryption" || true)"
     exit 1
 }
 
-[ -n "$KEY" ] || {
-    logger -t nfc-sync "Пароль Wi-Fi сети не обнаружен"
-    exit 1
-}
-
 [ "${#SSID}" -le 32 ] || {
-    logger -t nfc-sync "Имя Wi-Fi сети превышает 32 символов"
+    logger -t nfc-sync "Имя Wi-Fi сети превышает 32 символа"
     exit 1
 }
 
-[ "${#KEY}" -ge 8 ] && [ "${#KEY}" -le 63 ] || {
-    logger -t nfc-sync "Текущая длина пароля Wi-Fi не поддерживается"
-    exit 1
-}
+# ------------------------------------------------------------
+# WPA2 and open network only
+# ------------------------------------------------------------
 
-[ "$ENCRYPTION" = "psk2" ] || {
-    logger -t nfc-sync "Не поддерживаемый формат защиты: $ENCRYPTION"
-    exit 1
-}
+case "$ENCRYPTION" in
+
+    psk2)
+        [ "${#KEY}" -ge 8 ] && [ "${#KEY}" -le 63 ] || {
+            logger -t nfc-sync "Пароль WPA2 должен содержать 8-63 символа"
+            exit 1
+        }
+        ;;
+
+    none)
+        KEY=""
+        ;;
+
+    *)
+        logger -t nfc-sync "Режим $ENCRYPTION не поддерживается. Переключение на WPA2"
+
+        [ "${#KEY}" -ge 8 ] && [ "${#KEY}" -le 63 ] || {
+            logger -t nfc-sync "Невозможно переключить сеть на WPA2: существующий пароль не подходит"
+            exit 1
+        }
+
+        uci set "wireless.$SELECTED.encryption=psk2"
+        uci commit wireless
+
+        logger -t nfc-sync "Точка доступа переведена на WPA2. Перезагрузка Wi-Fi"
+
+        wifi reload
+
+        # Запись NFC будет выполнена следующим запуском.
+        exit 0
+        ;;
+
+esac
+
+# ------------------------------------------------------------
+# Check profile changes
+# ------------------------------------------------------------
 
 HASH="$(printf '%s\0%s\0%s' "$SSID" "$KEY" "$ENCRYPTION" |
     sha256sum | awk '{print $1}')"
@@ -171,24 +194,28 @@ if [ "$HASH" = "$OLD_HASH" ]; then
     exit 0
 fi
 
-logger -t nfc-sync "Обновление профиля NFC Wi-Fi из $SELECTED"
+logger -t nfc-sync "Обновление NFC-профиля из $SELECTED (режим: $ENCRYPTION)"
 
 cd "$DIR" || exit 1
+
+# ------------------------------------------------------------
+# Write NFC profile
+# ------------------------------------------------------------
 
 if "$BIN" 0 0x57 "$SSID" "$KEY" "$ENCRYPTION"; then
 
     [ -s "$BACKUP" ] || {
-        logger -t nfc-sync "WARNING: original NFC backup was not created"
+        logger -t nfc-sync "WARNING: оригинальная резервная копия NFC отсутствует"
         exit 1
     }
 
     printf '%s\n' "$HASH" > "$STATE.tmp"
     mv "$STATE.tmp" "$STATE"
 
-    logger -t nfc-sync "Данные записаны в чип"
+    logger -t nfc-sync "Данные успешно записаны в NFC"
 
 else
-    logger -t nfc-sync "Ошибка при сохранении данных в чип"
+    logger -t nfc-sync "Ошибка записи NFC"
     exit 1
 fi
 SYNC
@@ -199,7 +226,7 @@ chmod 700 "$SYNC"
 # 5. Create procd service
 # ------------------------------------------------------------
 
-echo "[5/7] Создание задачи в планировщик"
+echo "[5/7] Создание службы"
 
 cat > "$SERVICE" <<'SERVICE'
 #!/bin/sh /etc/rc.common
@@ -228,7 +255,7 @@ chmod 755 "$SERVICE"
 # 6. Configure cron and autostart
 # ------------------------------------------------------------
 
-echo "[6/7] Создание синхронизации"
+echo "[6/7] Настройка планировщика"
 
 touch "$CRON"
 
@@ -237,7 +264,7 @@ if ! grep -Fq '/usr/bin/nfc-sync.sh' "$CRON"; then
 fi
 
 [ -x /etc/init.d/cron ] || {
-    echo "ОШИБКА! Планировщик не доступен"
+    echo "ОШИБКА! Планировщик недоступен"
     exit 1
 }
 
@@ -250,7 +277,7 @@ fi
 # 7. First synchronization
 # ------------------------------------------------------------
 
-echo "[7/7] Синхронизация текущей сети в чип NFC"
+echo "[7/7] Синхронизация Wi-Fi с NFC"
 
 /etc/init.d/nfc-sync start
 
@@ -265,11 +292,10 @@ echo
 echo "================================================"
 echo " УСТАНОВКА ЗАВЕРШЕНА!"
 echo "================================================"
-echo "Данные:  $BIN"
-echo "Синхронизация:    $SYNC"
-echo "Служба: $SERVICE"
-echo "Бэкап:  $DIR/nfc_ndef_backup.bin"
-echo "Запись в планировщик:    каждую минуту"
+echo "Бинарник:        $BIN"
+echo "Синхронизация:   $SYNC"
+echo "Служба:          $SERVICE"
+echo "Резервная копия: $BACKUP"
+echo "Cron:            каждую минуту"
 echo
-echo "Синхронизация сети с чипом NFC применена"
 echo "================================================"
