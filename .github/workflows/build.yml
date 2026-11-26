@@ -98,7 +98,6 @@ jobs:
           mkdir -p imagebuilder/keys
           mkdir -p "$FILES/etc/apk/repositories.d"
 
-          # Копируем ключи только в imagebuilder/keys/, без дублирования в files/
           for DIR in "$FILES/etc/apk/keys" "$FILES/usr/share/aurora/feed"; do
             if [ -d "$DIR" ]; then
               find "$DIR" -maxdepth 1 -type f \( -name '*.pem' -o -name '*.pub' \) -exec cp -f {} imagebuilder/keys/ \;
@@ -159,22 +158,22 @@ jobs:
           netshift = {"netshift","luci-app-netshift","luci-i18n-netshift-ru"}
 
           packages = set()
-          skipped = []
           for line_number, line in enumerate(source.read_text().splitlines(), start=1):
-              fields = line.split()
-              if not fields: continue
-              entry = fields[0].split('>')[0]
+              line = line.strip()
+              if not line or line.startswith("#"):
+                  continue
+              # Убираем хвост ><hash>=, если он есть
+              entry = line.split('>')[0].strip()
+              if not entry:
+                  continue
+              # Пытаемся отрезать версию, если она есть
               match = re.match(r"^(.+)-([0-9][A-Za-z0-9.+~_-]*)$", entry)
-              if not match:
-                  skipped.append((line_number, entry)); continue
-              name = match.group(1)
+              if match:
+                  name = match.group(1)
+              else:
+                  name = entry  # версии нет — считаем это именем пакета
               if name not in excluded:
                   packages.add(name)
-
-          if skipped:
-              print("Unparsed package entries:")
-              for line_number, entry in skipped: print(f"  line {line_number}: {entry}")
-              raise SystemExit("ERROR: Some installed package entries could not be parsed")
 
           packages.update(aurora)
           packages.update(netshift)
@@ -186,11 +185,12 @@ jobs:
 
           output.write_text("\n".join(result) + "\n")
           print(f"Generated {len(result)} package entries.")
-          if "libnghttp2-14" not in packages: raise SystemExit("ERROR: libnghttp2-14 missing")
+          print("=== Generated package list ===")
+          print("\n".join(result))
+          if "libnghttp2-14" not in packages:
+              raise SystemExit("ERROR: libnghttp2-14 missing")
           print("\nPackage list generated successfully.")
           PY
-          echo "=== Generated package list ==="
-          cat /tmp/packages.list
 
       - name: Verify ImageBuilder device profile
         working-directory: imagebuilder
