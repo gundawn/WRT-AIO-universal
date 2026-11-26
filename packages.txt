@@ -13,3 +13,5 @@ luci-app-aurora-config
 luci-i18n-aurora-config-ru
 libnghttp2-14
 luci
+libstdcpp
+i2c-tools
