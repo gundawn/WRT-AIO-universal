@@ -104,7 +104,12 @@ fi
 
 trap 'rmdir "$LOCK" 2>/dev/null' EXIT INT TERM
 
-SELECTED=""
+# ------------------------------------------------------------
+# Find active AP sections for radio0 and radio1
+# ------------------------------------------------------------
+
+RADIO0=""
+RADIO1=""
 
 for section in $(uci -q show wireless |
     sed -n 's/^wireless\.\([^=]*\)=wifi-iface$/\1/p'); do
@@ -116,62 +121,94 @@ for section in $(uci -q show wireless |
     [ "$MODE" = "ap" ] || continue
     [ "$DISABLED" = "1" ] && continue
 
-    if [ "$DEVICE" = "radio0" ]; then
-        SELECTED="$section"
-        break
-    fi
-
-    [ -n "$SELECTED" ] || SELECTED="$section"
+    case "$DEVICE" in
+        radio0)
+            [ -n "$RADIO0" ] || RADIO0="$section"
+            ;;
+        radio1)
+            [ -n "$RADIO1" ] || RADIO1="$section"
+            ;;
+    esac
 done
 
-[ -n "$SELECTED" ] || {
-    logger -t nfc-sync "Wi-Fi не обнаружен"
+[ -n "$RADIO0" ] || {
+    logger -t nfc-sync "Активная точка доступа radio0 не обнаружена"
     exit 1
 }
 
-SSID="$(uci -q get "wireless.$SELECTED.ssid" || true)"
-KEY="$(uci -q get "wireless.$SELECTED.key" || true)"
-ENCRYPTION="$(uci -q get "wireless.$SELECTED.encryption" || true)"
+SSID0="$(uci -q get "wireless.$RADIO0.ssid" || true)"
+KEY0="$(uci -q get "wireless.$RADIO0.key" || true)"
+ENC0="$(uci -q get "wireless.$RADIO0.encryption" || true)"
 
-[ -n "$SSID" ] || {
-    logger -t nfc-sync "Имя Wi-Fi сети не обнаружено"
+[ -n "$SSID0" ] || {
+    logger -t nfc-sync "SSID radio0 не обнаружен"
     exit 1
 }
 
-[ "${#SSID}" -le 32 ] || {
-    logger -t nfc-sync "Имя Wi-Fi сети превышает 32 символа"
+[ "${#SSID0}" -le 32 ] || {
+    logger -t nfc-sync "SSID превышает 32 символа"
     exit 1
 }
 
 # ------------------------------------------------------------
-# WPA2 and open network only
+# Validate WPA2 key
 # ------------------------------------------------------------
 
-case "$ENCRYPTION" in
+valid_wpa2_key() {
+    [ "${#1}" -ge 8 ] && [ "${#1}" -le 63 ]
+}
+
+# ------------------------------------------------------------
+# Process radio0
+# ------------------------------------------------------------
+
+case "$ENC0" in
 
     psk2)
-        [ "${#KEY}" -ge 8 ] && [ "${#KEY}" -le 63 ] || {
-            logger -t nfc-sync "Пароль WPA2 должен содержать 8-63 символа"
+        valid_wpa2_key "$KEY0" || {
+            logger -t nfc-sync "Некорректный пароль WPA2 на radio0"
             exit 1
         }
         ;;
 
     none)
-        KEY=""
+        KEY0=""
         ;;
 
     *)
-        logger -t nfc-sync "Режим $ENCRYPTION не поддерживается. Переключение на WPA2"
+        logger -t nfc-sync "radio0: режим $ENC0 не поддерживается"
 
-        [ "${#KEY}" -ge 8 ] && [ "${#KEY}" -le 63 ] || {
-            logger -t nfc-sync "Невозможно переключить сеть на WPA2: существующий пароль не подходит"
+        valid_wpa2_key "$KEY0" || {
+            logger -t nfc-sync "radio0: существующий пароль не подходит для WPA2. Настройки не изменены"
             exit 1
         }
 
-        uci set "wireless.$SELECTED.encryption=psk2"
+        uci set "wireless.$RADIO0.encryption=psk2"
+
+        # ----------------------------------------------------
+        # Process radio1 only if SSID and password match
+        # ----------------------------------------------------
+
+        if [ -n "$RADIO1" ]; then
+            SSID1="$(uci -q get "wireless.$RADIO1.ssid" || true)"
+            KEY1="$(uci -q get "wireless.$RADIO1.key" || true)"
+            ENC1="$(uci -q get "wireless.$RADIO1.encryption" || true)"
+
+            if [ "$SSID0" = "$SSID1" ] && [ "$KEY0" = "$KEY1" ]; then
+
+                if [ "$ENC1" != "psk2" ]; then
+                    uci set "wireless.$RADIO1.encryption=psk2"
+                    logger -t nfc-sync "radio1: совпадающая сеть переведена на WPA2"
+                fi
+
+            else
+                logger -t nfc-sync "radio1: SSID или пароль отличаются, настройки не изменены"
+            fi
+        fi
+
         uci commit wireless
 
-        logger -t nfc-sync "Точка доступа переведена на WPA2. Перезагрузка Wi-Fi"
+        logger -t nfc-sync "radio0 переведён на WPA2. Применение настроек"
 
         wifi reload
 
@@ -182,10 +219,10 @@ case "$ENCRYPTION" in
 esac
 
 # ------------------------------------------------------------
-# Check profile changes
+# Check NFC profile changes
 # ------------------------------------------------------------
 
-HASH="$(printf '%s\0%s\0%s' "$SSID" "$KEY" "$ENCRYPTION" |
+HASH="$(printf '%s\0%s\0%s' "$SSID0" "$KEY0" "$ENC0" |
     sha256sum | awk '{print $1}')"
 
 OLD_HASH="$(cat "$STATE" 2>/dev/null || true)"
@@ -194,7 +231,7 @@ if [ "$HASH" = "$OLD_HASH" ]; then
     exit 0
 fi
 
-logger -t nfc-sync "Обновление NFC-профиля из $SELECTED (режим: $ENCRYPTION)"
+logger -t nfc-sync "Обновление NFC-профиля radio0 (режим: $ENC0)"
 
 cd "$DIR" || exit 1
 
@@ -202,7 +239,7 @@ cd "$DIR" || exit 1
 # Write NFC profile
 # ------------------------------------------------------------
 
-if "$BIN" 0 0x57 "$SSID" "$KEY" "$ENCRYPTION"; then
+if "$BIN" 0 0x57 "$SSID0" "$KEY0" "$ENC0"; then
 
     [ -s "$BACKUP" ] || {
         logger -t nfc-sync "WARNING: оригинальная резервная копия NFC отсутствует"
@@ -212,7 +249,7 @@ if "$BIN" 0 0x57 "$SSID" "$KEY" "$ENCRYPTION"; then
     printf '%s\n' "$HASH" > "$STATE.tmp"
     mv "$STATE.tmp" "$STATE"
 
-    logger -t nfc-sync "Данные успешно записаны в NFC"
+    logger -t nfc-sync "NFC-профиль успешно записан"
 
 else
     logger -t nfc-sync "Ошибка записи NFC"
