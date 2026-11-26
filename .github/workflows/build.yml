@@ -1,5 +1,4 @@
-
-name: Build Redmi AX6 firmware
+name: Build Xiaomi AX3000T firmware
 
 on:
   workflow_dispatch:
@@ -14,11 +13,13 @@ jobs:
 
     env:
       OPENWRT_VERSION: "25.12.6"
-      TARGET: "qualcommax/ipq807x"
-      PROFILE: "redmi_ax6"
+      # AX3000T — это MediaTek Filogic
+      TARGET: "mediatek/filogic"
+      PROFILE: "xiaomi_mi-router-ax3000t"
 
-      IMAGEBUILDER_URL: "https://downloads.openwrt.org/releases/25.12.6/targets/qualcommax/ipq807x/openwrt-imagebuilder-25.12.6-qualcommax-ipq807x.Linux-x86_64.tar.zst"
-      IMAGEBUILDER_SHA256: "590f298b44dd06e70766890af7810408b11a8bbe586685fb66d131b57043a38f"
+      # Обязательно замените SHA256 на фактическое значение для этой платформы
+      IMAGEBUILDER_URL: "https://downloads.openwrt.org/releases/25.12.6/targets/mediatek/filogic/openwrt-imagebuilder-25.12.6-mediatek-filogic.Linux-x86_64.tar.zst"
+      IMAGEBUILDER_SHA256: "AUTO_DETECT" # <--- Замените на официальное значение SHA256
 
       AURORA_FEED: "https://openwrt.eamonxg.fun/snapshots/apk/packages.adb"
 
@@ -34,343 +35,181 @@ jobs:
       - name: Install build dependencies
         run: |
           set -euo pipefail
-
           sudo apt-get update
-
           sudo apt-get install -y \
-            build-essential \
-            clang \
-            flex \
-            bison \
-            g++ \
-            gawk \
-            gcc-multilib \
-            g++-multilib \
-            gettext \
-            git \
-            libncurses-dev \
-            libssl-dev \
-            python3 \
-            python3-setuptools \
-            rsync \
-            unzip \
-            zlib1g-dev \
-            file \
-            wget \
-            curl \
-            zstd \
-            squashfs-tools \
-            xz-utils
+            build-essential clang flex bison g++ gawk gcc-multilib g++-multilib \
+            gettext git libncurses-dev libssl-dev python3 python3-setuptools \
+            rsync unzip zlib1g-dev file wget curl zstd squashfs-tools xz-utils
 
       - name: Check input files
         run: |
           set -euo pipefail
+          test -s custom-files.tar.gz || { echo "ERROR: custom-files.tar.gz not found"; exit 1; }
+          test -s packages.txt || { echo "ERROR: packages.txt not found"; exit 1; }
 
-          test -s custom-files.tar.gz || {
-            echo "ERROR: custom-files.tar.gz not found"
-            exit 1
-          }
-
-          test -s packages.txt || {
-            echo "ERROR: packages.txt not found"
-            exit 1
-          }
-
-          echo "5d565bb39bb5963bac48a16a1d8c8355935dc11e6998378e89837a3936dc2872  custom-files.tar.gz" \
-            | sha256sum -c -
-
-          echo "4ec6314d99914fc51c1ed42e65a31f858792f56286ca8d58bbee2a9b1a21b5e0  packages.txt" \
-            | sha256sum -c -
+          # Если вы изменили tar.gz или packages.txt, обязательно обновите следующие SHA256
+          echo "5d565bb39bb5963bac48a16a1d8c8355935dc11e6998378e89837a3936dc2872  custom-files.tar.gz" | sha256sum -c -
+          echo "4ec6314d99914fc51c1ed42e65a31f858792f56286ca8d58bbee2a9b1a21b5e0  packages.txt" | sha256sum -c -
 
           echo "Input files verified."
 
       - name: Download OpenWrt ImageBuilder
         run: |
           set -euo pipefail
+          wget -q --tries=3 --timeout=60 "$IMAGEBUILDER_URL" -O imagebuilder.tar.zst
 
-          wget -q "$IMAGEBUILDER_URL" -O imagebuilder.tar.zst
-
-          echo "$IMAGEBUILDER_SHA256  imagebuilder.tar.zst" \
-            | sha256sum -c -
+          if [ "$IMAGEBUILDER_SHA256" != "AUTO_DETECT" ]; then
+            echo "$IMAGEBUILDER_SHA256  imagebuilder.tar.zst" | sha256sum -c -
+          else
+            echo "WARNING: Skipping ImageBuilder SHA256 check (AUTO_DETECT)."
+          fi
 
           mkdir imagebuilder
-
-          tar --zstd -xf imagebuilder.tar.zst \
-            -C imagebuilder \
-            --strip-components=1
+          tar --zstd -xf imagebuilder.tar.zst -C imagebuilder --strip-components=1
 
           test -f imagebuilder/Makefile
           test -f imagebuilder/repositories
-
           echo "ImageBuilder extracted successfully."
 
       - name: Restore configuration archive
         run: |
           set -euo pipefail
-
           mkdir -p imagebuilder/files
+          tar -xzf custom-files.tar.gz -C imagebuilder/files
 
-          tar -xzpf custom-files.tar.gz \
-            -C imagebuilder/files
+          test -x imagebuilder/files/usr/bin/sing-box || { echo "ERROR: sing-box binary missing from archive"; exit 1; }
 
-          test -x imagebuilder/files/usr/bin/sing-box || {
-            echo "ERROR: sing-box binary missing from archive"
-            exit 1
-          }
-
-          ACTUAL_HASH="$(
-            sha256sum imagebuilder/files/usr/bin/sing-box \
-              | awk '{print $1}'
-          )"
-
+          ACTUAL_HASH="$(sha256sum imagebuilder/files/usr/bin/sing-box | awk '{print $1}')"
           if [ "$ACTUAL_HASH" != "$SINGBOX_SHA256" ]; then
             echo "ERROR: Extended Lite binary checksum mismatch"
             echo "Expected: $SINGBOX_SHA256"
             echo "Actual:   $ACTUAL_HASH"
             exit 1
           fi
-
           echo "Configuration archive and Sing-box verified."
 
       - name: Remove stale APK state and NetShift overlay files
         run: |
           set -euo pipefail
-
           FILES="imagebuilder/files"
-
           rm -f "$FILES/etc/apk/world"
-
           rm -f \
             "$FILES/usr/bin/netshift" \
             "$FILES/etc/init.d/netshift" \
             "$FILES/usr/share/luci/menu.d/luci-app-netshift.json" \
             "$FILES/usr/share/rpcd/acl.d/luci-app-netshift.json" \
             "$FILES/usr/lib/lua/luci/i18n/netshift.ru.lmo"
-
           rm -rf "$FILES/usr/lib/netshift"
-
           if [ -d "$FILES/www/luci-static/resources/view" ]; then
-            find "$FILES/www/luci-static/resources/view" \
-              -maxdepth 1 \
-              -name 'netshift_*' \
-              -exec rm -rf {} +
+            find "$FILES/www/luci-static/resources/view" -maxdepth 1 -name 'netshift_*' -exec rm -rf {} +
           fi
-
-          if [ -f "$FILES/etc/config/netshift" ]; then
-            echo "NetShift configuration preserved."
-          fi
-
+          if [ -f "$FILES/etc/config/netshift" ]; then echo "NetShift configuration preserved."; fi
           echo "Stale APK state and copied NetShift package files removed."
 
       - name: Configure Aurora repository and signing keys
         run: |
           set -euo pipefail
-
           FILES="imagebuilder/files"
-
           mkdir -p imagebuilder/keys
-          mkdir -p "$FILES/etc/apk/keys"
           mkdir -p "$FILES/etc/apk/repositories.d"
 
-          for DIR in \
-            "$FILES/etc/apk/keys" \
-            "$FILES/usr/share/aurora/feed"
-          do
+          # Копируем ключи только в imagebuilder/keys/, не дублируем в files/
+          for DIR in "$FILES/etc/apk/keys" "$FILES/usr/share/aurora/feed"; do
             if [ -d "$DIR" ]; then
-              find "$DIR" -maxdepth 1 -type f \
-                \( -name '*.pem' -o -name '*.pub' \) \
-                -exec cp -f {} imagebuilder/keys/ \;
-
-              find "$DIR" -maxdepth 1 -type f \
-                \( -name '*.pem' -o -name '*.pub' \) \
-                -exec cp -f {} "$FILES/etc/apk/keys/" \;
+              find "$DIR" -maxdepth 1 -type f \( -name '*.pem' -o -name '*.pub' \) -exec cp -f {} imagebuilder/keys/ \;
             fi
           done
 
-          if ! find imagebuilder/keys -maxdepth 1 -type f \
-            -name '*.pub' | grep -q .
-          then
-            echo "ERROR: Aurora public signing key not found"
-            exit 1
+          if ! find imagebuilder/keys -maxdepth 1 -type f -name '*.pub' | grep -q .; then
+            echo "ERROR: Aurora public signing key not found"; exit 1
           fi
-
-          if ! find imagebuilder/keys -maxdepth 1 -type f \
-            -name '*.pem' | grep -q .
-          then
-            echo "ERROR: Aurora PEM signing key not found"
-            exit 1
+          if ! find imagebuilder/keys -maxdepth 1 -type f -name '*.pem' | grep -q .; then
+            echo "ERROR: Aurora PEM signing key not found"; exit 1
           fi
 
           TEMP_REPOSITORIES="$(mktemp)"
-
-          {
-            printf '@aurora %s\n' "$AURORA_FEED"
-            cat imagebuilder/repositories
-          } > "$TEMP_REPOSITORIES"
-
+          { printf '@aurora %s\n' "$AURORA_FEED"; cat imagebuilder/repositories; } > "$TEMP_REPOSITORIES"
           mv "$TEMP_REPOSITORIES" imagebuilder/repositories
 
           python3 - <<'PY'
           from pathlib import Path
-
           root = Path("imagebuilder/files/etc/apk/repositories.d")
           feed = "https://openwrt.eamonxg.fun/snapshots/apk/packages.adb"
-
           root.mkdir(parents=True, exist_ok=True)
-
           for path in root.glob("*.list"):
-              if path.name == "aurora.list":
-                  continue
-
+              if path.name == "aurora.list": continue
               lines = path.read_text(errors="replace").splitlines()
               filtered = [line for line in lines if feed not in line]
-
               if filtered != lines:
-                  path.write_text(
-                      "\n".join(filtered) + ("\n" if filtered else "")
-                  )
-
+                  path.write_text("\n".join(filtered) + ("\n" if filtered else ""))
           (root / "aurora.list").write_text(f"@aurora {feed}\n")
           PY
-
           echo "Aurora repository configured."
           find imagebuilder/keys -maxdepth 1 -type f -printf '%f\n'
 
       - name: Download NetShift APK packages
         run: |
           set -euo pipefail
-
           mkdir -p imagebuilder/packages
+          curl -fL --retry 3 "$NETSHIFT_RELEASE_URL/netshift-0.9.12-r1.apk" -o imagebuilder/packages/netshift-0.9.12-r1.apk
+          echo "af84753fc38c2cbabdce2c444050309c7dbd9b2d02b4f93e8dfe1a4c8f30cf72  imagebuilder/packages/netshift-0.9.12-r1.apk" | sha256sum -c -
 
-          curl -fL --retry 3 \
-            "$NETSHIFT_RELEASE_URL/netshift-0.9.12-r1.apk" \
-            -o imagebuilder/packages/netshift-0.9.12-r1.apk
+          curl -fL --retry 3 "$NETSHIFT_RELEASE_URL/luci-app-netshift-0.9.12-r1.apk" -o imagebuilder/packages/luci-app-netshift-0.9.12-r1.apk
+          echo "de285bf9d3b93be95074e80aabf5b4a280ffe36772acff82722f7bfe42a5ec12  imagebuilder/packages/luci-app-netshift-0.9.12-r1.apk" | sha256sum -c -
 
-          echo "af84753fc38c2cbabdce2c444050309c7dbd9b2d02b4f93e8dfe1a4c8f30cf72  imagebuilder/packages/netshift-0.9.12-r1.apk" \
-            | sha256sum -c -
+          curl -fL --retry 3 "$NETSHIFT_RELEASE_URL/luci-i18n-netshift-ru-0.9.12.apk" -o /tmp/luci-i18n-netshift-ru.apk
+          echo "50e8eb879e2973f419ca2c62815fd2a9e7346d0c5e7c3b2c733688e64ec59319  /tmp/luci-i18n-netshift-ru.apk" | sha256sum -c -
 
-          curl -fL --retry 3 \
-            "$NETSHIFT_RELEASE_URL/luci-app-netshift-0.9.12-r1.apk" \
-            -o imagebuilder/packages/luci-app-netshift-0.9.12-r1.apk
-
-          echo "de285bf9d3b93be95074e80aabf5b4a280ffe36772acff82722f7bfe42a5ec12  imagebuilder/packages/luci-app-netshift-0.9.12-r1.apk" \
-            | sha256sum -c -
-
-          curl -fL --retry 3 \
-            "$NETSHIFT_RELEASE_URL/luci-i18n-netshift-ru-0.9.12.apk" \
-            -o /tmp/luci-i18n-netshift-ru.apk
-
-          echo "50e8eb879e2973f419ca2c62815fd2a9e7346d0c5e7c3b2c733688e64ec59319  /tmp/luci-i18n-netshift-ru.apk" \
-            | sha256sum -c -
-
-          mv /tmp/luci-i18n-netshift-ru.apk \
-            imagebuilder/packages/luci-i18n-netshift-ru-0.261025.30010.apk
+          mv /tmp/luci-i18n-netshift-ru.apk imagebuilder/packages/luci-i18n-netshift-ru-0.261025.30010.apk
 
           test -s imagebuilder/packages/netshift-0.9.12-r1.apk
           test -s imagebuilder/packages/luci-app-netshift-0.9.12-r1.apk
           test -s imagebuilder/packages/luci-i18n-netshift-ru-0.261025.30010.apk
-
           echo "All three NetShift APK packages verified."
 
       - name: Generate complete package list
         run: |
           set -euo pipefail
-
           python3 - <<'PY'
           import re
           from pathlib import Path
-
           source = Path("packages.txt")
           output = Path("/tmp/packages.list")
-
-          excluded = {
-              "base-files",
-              "kernel",
-              "libc",
-          }
-
-          aurora = {
-              "luci-app-aurora-config",
-              "luci-i18n-aurora-config-ru",
-              "luci-theme-aurora",
-              "luci-mod-dashboard",
-              "luci-i18n-dashboard-ru",
-          }
-
-          netshift = {
-              "netshift",
-              "luci-app-netshift",
-              "luci-i18n-netshift-ru",
-          }
+          excluded = {"base-files", "kernel", "libc"}
+          aurora = {"luci-app-aurora-config","luci-i18n-aurora-config-ru","luci-theme-aurora","luci-mod-dashboard","luci-i18n-dashboard-ru"}
+          netshift = {"netshift","luci-app-netshift","luci-i18n-netshift-ru"}
 
           packages = set()
           skipped = []
-
-          for line_number, line in enumerate(
-              source.read_text().splitlines(), start=1
-          ):
+          for line_number, line in enumerate(source.read_text().splitlines(), start=1):
               fields = line.split()
-
-              if not fields:
-                  continue
-
-              entry = fields[0]
-
-              match = re.match(
-                  r"^(.+)-([0-9][A-Za-z0-9.+~_-]*)$",
-                  entry
-              )
-
+              if not fields: continue
+              entry = fields[0].split('>')[0] # Очистка суффикса ><hash>=
+              match = re.match(r"^(.+)-([0-9][A-Za-z0-9.+~_-]*)$", entry)
               if not match:
-                  skipped.append((line_number, entry))
-                  continue
-
+                  skipped.append((line_number, entry)); continue
               name = match.group(1)
-
               if name not in excluded:
                   packages.add(name)
 
           if skipped:
               print("Unparsed package entries:")
-
-              for line_number, entry in skipped:
-                  print(f"  line {line_number}: {entry}")
-
-              raise SystemExit(
-                  "ERROR: Some installed package entries could not be parsed"
-              )
+              for line_number, entry in skipped: print(f"  line {line_number}: {entry}")
+              raise SystemExit("ERROR: Some installed package entries could not be parsed")
 
           packages.update(aurora)
           packages.update(netshift)
 
           result = []
-
           for name in sorted(packages):
-              if name in aurora:
-                  result.append(f"{name}@aurora")
-              else:
-                  result.append(name)
+              if name in aurora: result.append(f"{name}@aurora")
+              else: result.append(name)
 
           output.write_text("\n".join(result) + "\n")
-
           print(f"Generated {len(result)} package entries.")
-
-          print("\nAurora packages:")
-          for name in sorted(aurora):
-              print(f"  {name}@aurora")
-
-          print("\nNetShift packages:")
-          for name in sorted(netshift):
-              print(f"  {name}")
-
-          if "libnghttp2-14" not in packages:
-              raise SystemExit(
-                  "ERROR: libnghttp2-14 missing from package list"
-              )
-
+          if "libnghttp2-14" not in packages: raise SystemExit("ERROR: libnghttp2-14 missing")
           print("\nPackage list generated successfully.")
           PY
-
           echo "=== Generated package list ==="
           cat /tmp/packages.list
 
@@ -378,233 +217,106 @@ jobs:
         working-directory: imagebuilder
         run: |
           set -euo pipefail
-
           make info > /tmp/imagebuilder-info.txt
-
           if ! grep -Fq "$PROFILE" /tmp/imagebuilder-info.txt; then
             echo "ERROR: Profile not found: $PROFILE"
             cat /tmp/imagebuilder-info.txt
             exit 1
           fi
-
           echo "Verified profile: $PROFILE"
 
       - name: Build firmware image
         working-directory: imagebuilder
         run: |
           set -euo pipefail
-
-          PACKAGES="$(tr '\n' ' ' < /tmp/packages.list)"
-
+          # Ключевой момент: -sing-box исключает стандартный пакет
+          PACKAGES="$(tr '\n' ' ' < /tmp/packages.list) -sing-box"
           echo "Building firmware for $PROFILE"
           echo "Package count: $(wc -l < /tmp/packages.list)"
-
-          make image \
-            PROFILE="$PROFILE" \
-            PACKAGES="$PACKAGES" \
-            FILES="files" \
-            V=s
+          make image PROFILE="$PROFILE" PACKAGES="$PACKAGES" FILES="files" V=s
 
       - name: Verify generated firmware
         run: |
           set -euo pipefail
-
-          IMAGE="$(
-            find imagebuilder/bin/targets/qualcommax/ipq807x \
-              -maxdepth 1 \
-              -type f \
-              -name '*redmi_ax6*squashfs-sysupgrade.bin' \
-              -print -quit
-          )"
-
+          IMAGE="$(find imagebuilder/bin/targets/mediatek/filogic -maxdepth 1 -type f -name '*ax3000t*squashfs-sysupgrade.bin' -print -quit)"
           if [ -z "$IMAGE" ]; then
-            echo "ERROR: Redmi AX6 sysupgrade image not found"
-
-            find imagebuilder/bin/targets/qualcommax/ipq807x \
-              -maxdepth 1 -type f -print
-
+            echo "ERROR: AX3000T sysupgrade image not found"
+            find imagebuilder/bin/targets/mediatek/filogic -maxdepth 1 -type f -print
             exit 1
           fi
-
           echo "Firmware image: $IMAGE"
 
-          mkdir -p /tmp/ax6-check
-
+          mkdir -p /tmp/ax3000t-check
           echo "=== Extracting root filesystem ==="
+          ROOT_MEMBER="$(tar -tf "$IMAGE" | grep -E '(^|/)root$' | head -n 1 || true)"
+          if [ -z "$ROOT_MEMBER" ]; then echo "ERROR: Root filesystem not found"; exit 1; fi
+          tar -xOf "$IMAGE" "$ROOT_MEMBER" > /tmp/ax3000t-check/root.squashfs
+          sudo unsquashfs -d /tmp/ax3000t-check/rootfs /tmp/ax3000t-check/root.squashfs
 
-          ROOT_MEMBER="$(
-            tar -tf "$IMAGE" \
-              | grep -E '(^|/)root$' \
-              | head -n 1 || true
-          )"
-
-          if [ -z "$ROOT_MEMBER" ]; then
-            echo "ERROR: Root filesystem not found in sysupgrade archive"
-            exit 1
-          fi
-
-          tar -xOf "$IMAGE" "$ROOT_MEMBER" \
-            > /tmp/ax6-check/root.squashfs
-
-          # Run as root so unsquashfs can create /dev/console
-          # and other special filesystem entries.
-          sudo unsquashfs \
-            -d /tmp/ax6-check/rootfs \
-            /tmp/ax6-check/root.squashfs
-
-          ROOT="/tmp/ax6-check/rootfs"
+          ROOT="/tmp/ax3000t-check/rootfs"
           APK_DB="$ROOT/lib/apk/db/installed"
-
-          test -s "$APK_DB" || {
-            echo "ERROR: APK installed database missing"
-            exit 1
-          }
+          test -s "$APK_DB" || { echo "ERROR: APK installed database missing"; exit 1; }
 
           echo "=== Verify Sing-box Extended Lite ==="
-
-          test -x "$ROOT/usr/bin/sing-box" || {
-            echo "ERROR: sing-box binary missing"
-            exit 1
-          }
-
-          ACTUAL_HASH="$(
-            sha256sum "$ROOT/usr/bin/sing-box" \
-              | awk '{print $1}'
-          )"
-
+          test -x "$ROOT/usr/bin/sing-box" || { echo "ERROR: sing-box binary missing"; exit 1; }
+          ACTUAL_HASH="$(sha256sum "$ROOT/usr/bin/sing-box" | awk '{print $1}')"
           if [ "$ACTUAL_HASH" != "$SINGBOX_SHA256" ]; then
             echo "ERROR: Sing-box Extended Lite checksum mismatch"
-            echo "Expected: $SINGBOX_SHA256"
-            echo "Actual:   $ACTUAL_HASH"
-            exit 1
+            echo "Expected: $SINGBOX_SHA256"; echo "Actual:   $ACTUAL_HASH"; exit 1
           fi
-
           echo "Sing-box Extended Lite verified."
 
           echo "=== Verify installed APK package records ==="
-
           while IFS= read -r SPEC; do
             [ -n "$SPEC" ] || continue
-
             PACKAGE="${SPEC%%@*}"
-
-            if ! grep -Fqx "P:$PACKAGE" "$APK_DB"; then
-              echo "ERROR: Package not registered: $PACKAGE"
-              exit 1
-            fi
-
+            if ! grep -Fqx "P:$PACKAGE" "$APK_DB"; then echo "ERROR: Package not registered: $PACKAGE"; exit 1; fi
             echo "OK: $PACKAGE"
-
           done < /tmp/packages.list
 
           echo "=== Verify NetShift files ==="
-
-          for FILE in \
-            usr/bin/netshift \
-            etc/init.d/netshift \
-            usr/share/luci/menu.d/luci-app-netshift.json \
-            usr/share/rpcd/acl.d/luci-app-netshift.json
-          do
-            if [ ! -e "$ROOT/$FILE" ]; then
-              echo "ERROR: NetShift file missing: $FILE"
-              exit 1
-            fi
-
+          for FILE in usr/bin/netshift etc/init.d/netshift usr/share/luci/menu.d/luci-app-netshift.json usr/share/rpcd/acl.d/luci-app-netshift.json; do
+            if [ ! -e "$ROOT/$FILE" ]; then echo "ERROR: NetShift file missing: $FILE"; exit 1; fi
             echo "OK: $FILE"
           done
 
           echo "=== Verify Aurora packages ==="
-
-          for PACKAGE in \
-            luci-app-aurora-config \
-            luci-i18n-aurora-config-ru \
-            luci-theme-aurora \
-            luci-mod-dashboard \
-            luci-i18n-dashboard-ru
-          do
-            grep -Fqx "P:$PACKAGE" "$APK_DB" || {
-              echo "ERROR: Aurora package not registered: $PACKAGE"
-              exit 1
-            }
-
+          for PACKAGE in luci-app-aurora-config luci-i18n-aurora-config-ru luci-theme-aurora luci-mod-dashboard luci-i18n-dashboard-ru; do
+            grep -Fqx "P:$PACKAGE" "$APK_DB" || { echo "ERROR: Aurora package not registered: $PACKAGE"; exit 1; }
             echo "OK: $PACKAGE"
           done
 
           echo "=== Verify Aurora repository ==="
-
           AURORA_LIST="$ROOT/etc/apk/repositories.d/aurora.list"
-
-          test -s "$AURORA_LIST" || {
-            echo "ERROR: Aurora repository configuration missing"
-            exit 1
-          }
-
-          grep -Fq "@aurora $AURORA_FEED" "$AURORA_LIST" || {
-            echo "ERROR: Aurora tagged feed not configured"
-            cat "$AURORA_LIST"
-            exit 1
-          }
-
+          test -s "$AURORA_LIST" || { echo "ERROR: Aurora repository configuration missing"; exit 1; }
+          grep -Fq "@aurora $AURORA_FEED" "$AURORA_LIST" || { echo "ERROR: Aurora tagged feed not configured"; cat "$AURORA_LIST"; exit 1; }
           echo "Aurora feed verified."
 
           echo "=== Verify Aurora world entries ==="
-
           WORLD="$ROOT/etc/apk/world"
-
-          test -s "$WORLD" || {
-            echo "ERROR: APK world file missing"
-            exit 1
-          }
-
-          for PACKAGE in \
-            luci-app-aurora-config \
-            luci-i18n-aurora-config-ru \
-            luci-theme-aurora \
-            luci-mod-dashboard \
-            luci-i18n-dashboard-ru
-          do
-            if ! grep -Fq "${PACKAGE}@aurora" "$WORLD"; then
-              echo "ERROR: Aurora package is not pinned to Aurora feed: $PACKAGE"
-              cat "$WORLD"
-              exit 1
-            fi
+          test -s "$WORLD" || { echo "ERROR: APK world file missing"; exit 1; }
+          for PACKAGE in luci-app-aurora-config luci-i18n-aurora-config-ru luci-theme-aurora luci-mod-dashboard luci-i18n-dashboard-ru; do
+            if ! grep -Fq "${PACKAGE}@aurora" "$WORLD"; then echo "ERROR: Aurora package is not pinned to Aurora feed: $PACKAGE"; cat "$WORLD"; exit 1; fi
           done
-
           echo "Aurora world entries verified."
 
           echo "=== Verify preserved configuration ==="
-
-          if [ -f "$ROOT/etc/config/netshift" ]; then
-            echo "NetShift configuration preserved."
-          else
-            echo "WARNING: /etc/config/netshift not found"
-          fi
-
+          if [ -f "$ROOT/etc/config/netshift" ]; then echo "NetShift configuration preserved."; else echo "WARNING: /etc/config/netshift not found"; fi
           if [ -f "$ROOT/etc/crontabs/root" ]; then
-            if grep -Fq "0 5 * * * /sbin/reboot" "$ROOT/etc/crontabs/root"; then
-              echo "Daily 05:00 reboot cron entry preserved."
-            else
-              echo "WARNING: Daily 05:00 reboot entry not found."
-            fi
-          else
-            echo "WARNING: root crontab not found."
-          fi
+            if grep -Fq "0 5 * * * /sbin/reboot" "$ROOT/etc/crontabs/root"; then echo "Daily 05:00 reboot cron entry preserved."; else echo "WARNING: Daily 05:00 reboot entry not found."; fi
+          else echo "WARNING: root crontab not found."; fi
 
           echo "=== Image verification complete ==="
-
-          sha256sum "$IMAGE" | tee /tmp/ax6-image.sha256
-
-          echo "$IMAGE" > /tmp/ax6-image-path
+          sha256sum "$IMAGE" | tee /tmp/ax3000t-image.sha256
+          echo "$IMAGE" > /tmp/ax3000t-image-path
 
       - name: Upload firmware artifact
         uses: actions/upload-artifact@v4
         with:
-          name: redmi-ax6-openwrt-25.12.6
-
+          name: xiaomi-ax3000t-openwrt-25.12.6
           path: |
-            ${{ github.workspace }}/imagebuilder/bin/targets/qualcommax/ipq807x/*redmi_ax6*squashfs-sysupgrade.bin
-            ${{ github.workspace }}/imagebuilder/bin/targets/qualcommax/ipq807x/*redmi_ax6*.manifest
-            /tmp/ax6-image.sha256
-
+            ${{ github.workspace }}/imagebuilder/bin/targets/mediatek/filogic/*ax3000t*squashfs-sysupgrade.bin
+            ${{ github.workspace }}/imagebuilder/bin/targets/mediatek/filogic/*ax3000t*.manifest
+            /tmp/ax3000t-image.sha256
           if-no-files-found: error
           retention-days: 30
