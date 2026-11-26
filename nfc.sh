@@ -20,14 +20,14 @@ SOURCE_URL="https://ghproxy.net/https://github.com/HuntezWOTB/xinfc-gui-openwrt/
 BIN_SHA256="17aa90aba1c85b3f5763f64cc61753262b7080c4f27182f80ee2c7bc3259d924"
 
 echo "================================================"
-echo " Xiaomi AX3000T — NFC Wi-Fi setup"
+echo " Xiaomi AX3000T — Активация NFC"
 echo "================================================"
 
 # ------------------------------------------------------------
 # 1. Dependencies
 # ------------------------------------------------------------
 
-echo "[1/7] Installing dependencies..."
+echo "[1/7] Установка зависимостей"
 
 apk add libstdcpp i2c-tools
 
@@ -35,7 +35,7 @@ apk add libstdcpp i2c-tools
 # 2. Download and install xinfc-wsc
 # ------------------------------------------------------------
 
-echo "[2/7] Installing xinfc-wsc..."
+echo "[2/7] Установка драйвера"
 
 if [ ! -x "$BIN" ]; then
     rm -rf "$WORK"
@@ -48,14 +48,14 @@ if [ ! -x "$BIN" ]; then
     FOUND_BIN="$WORK/xinfc-gui-openwrt-main/bin/xinfc-wsc-aarch64"
 
     [ -s "$FOUND_BIN" ] || {
-        echo "ERROR: xinfc-wsc binary not found"
+        echo "ОШИБКА! Файл не найден"
         exit 1
     }
 
     ACTUAL_HASH="$(sha256sum "$FOUND_BIN" | awk '{print $1}')"
 
     [ "$ACTUAL_HASH" = "$BIN_SHA256" ] || {
-        echo "ERROR: Binary SHA256 verification failed"
+        echo "ОШИБКА! Контрольные суммы файла не совпадают"
         exit 1
     }
 
@@ -69,12 +69,12 @@ fi
 # 3. NFC chip detection and backup preservation
 # ------------------------------------------------------------
 
-echo "[3/7] Checking NFC chip..."
+echo "[3/7] Проверка чипа"
 
 mkdir -p "$DIR"
 
 i2cdetect -y 0 | grep -Eq '(^|[[:space:]])57([[:space:]]|$)' || {
-    echo "ERROR: NFC chip 0x57 not detected on I2C bus 0"
+    echo "ОШИБКА! NFC-чип 0x57 не обнаружен на шине l2s"
     exit 1
 }
 
@@ -89,7 +89,7 @@ fi
 # 4. Create synchronization script
 # ------------------------------------------------------------
 
-echo "[4/7] Creating NFC synchronization script..."
+echo "[4/7] Создание скрипта синхронизации"
 
 cat > "$SYNC" <<'SYNC'
 #!/bin/sh
@@ -129,7 +129,7 @@ for section in $(uci -q show wireless |
 done
 
 [ -n "$SELECTED" ] || {
-    logger -t nfc-sync "No active Wi-Fi AP found"
+    logger -t nfc-sync "Wi-Fi не обнаружен"
     exit 1
 }
 
@@ -138,27 +138,27 @@ KEY="$(uci -q get "wireless.$SELECTED.key" || true)"
 ENCRYPTION="$(uci -q get "wireless.$SELECTED.encryption" || true)"
 
 [ -n "$SSID" ] || {
-    logger -t nfc-sync "SSID is empty"
+    logger -t nfc-sync "Имя Wi-Fi сети не обнаружено"
     exit 1
 }
 
 [ -n "$KEY" ] || {
-    logger -t nfc-sync "Wi-Fi key is missing"
+    logger -t nfc-sync "Пароль Wi-Fi сети не обнаружен"
     exit 1
 }
 
 [ "${#SSID}" -le 32 ] || {
-    logger -t nfc-sync "SSID exceeds 32 characters"
+    logger -t nfc-sync "Имя Wi-Fi сети превышает 32 символов"
     exit 1
 }
 
 [ "${#KEY}" -ge 8 ] && [ "${#KEY}" -le 63 ] || {
-    logger -t nfc-sync "Wi-Fi key length is unsupported"
+    logger -t nfc-sync "Текущая длина пароля Wi-Fi не поддерживается"
     exit 1
 }
 
 [ "$ENCRYPTION" = "psk2" ] || {
-    logger -t nfc-sync "Unsupported encryption: $ENCRYPTION"
+    logger -t nfc-sync "Не поддерживаемый формат защиты: $ENCRYPTION"
     exit 1
 }
 
@@ -171,7 +171,7 @@ if [ "$HASH" = "$OLD_HASH" ]; then
     exit 0
 fi
 
-logger -t nfc-sync "Updating NFC Wi-Fi profile from $SELECTED"
+logger -t nfc-sync "Обновление профиля NFC Wi-Fi из $SELECTED"
 
 cd "$DIR" || exit 1
 
@@ -185,10 +185,10 @@ if "$BIN" 0 0x57 "$SSID" "$KEY" "$ENCRYPTION"; then
     printf '%s\n' "$HASH" > "$STATE.tmp"
     mv "$STATE.tmp" "$STATE"
 
-    logger -t nfc-sync "NFC update successful"
+    logger -t nfc-sync "Данные записаны в чип"
 
 else
-    logger -t nfc-sync "NFC update failed"
+    logger -t nfc-sync "Ошибка при сохранении данных в чип"
     exit 1
 fi
 SYNC
@@ -199,7 +199,7 @@ chmod 700 "$SYNC"
 # 5. Create procd service
 # ------------------------------------------------------------
 
-echo "[5/7] Creating procd service..."
+echo "[5/7] Создание задачи в планировщик"
 
 cat > "$SERVICE" <<'SERVICE'
 #!/bin/sh /etc/rc.common
@@ -228,7 +228,7 @@ chmod 755 "$SERVICE"
 # 6. Configure cron and autostart
 # ------------------------------------------------------------
 
-echo "[6/7] Configuring automatic synchronization..."
+echo "[6/7] Создание синхронизации"
 
 touch "$CRON"
 
@@ -237,7 +237,7 @@ if ! grep -Fq '/usr/bin/nfc-sync.sh' "$CRON"; then
 fi
 
 [ -x /etc/init.d/cron ] || {
-    echo "ERROR: cron service is unavailable"
+    echo "ОШИБКА! Планировщик не доступен"
     exit 1
 }
 
@@ -250,7 +250,7 @@ fi
 # 7. First synchronization
 # ------------------------------------------------------------
 
-echo "[7/7] Performing initial NFC synchronization..."
+echo "[7/7] Синхронизация текущей сети в чип NFC"
 
 /etc/init.d/nfc-sync start
 
@@ -263,13 +263,13 @@ rm -f "$ARCHIVE"
 
 echo
 echo "================================================"
-echo " NFC SETUP COMPLETE"
+echo " УСТАНОВКА ЗАВЕРШЕНА!"
 echo "================================================"
-echo "Binary:  $BIN"
-echo "Sync:    $SYNC"
-echo "Service: $SERVICE"
-echo "Backup:  $DIR/nfc_ndef_backup.bin"
-echo "Cron:    every minute"
+echo "Данные:  $BIN"
+echo "Синхронизация:    $SYNC"
+echo "Служба: $SERVICE"
+echo "Бэкап:  $DIR/nfc_ndef_backup.bin"
+echo "Запись в планировщик:    каждую минуту"
 echo
-echo "NFC Wi-Fi synchronization is enabled."
+echo "Синхронизация сети с чипом NFC применена"
 echo "================================================"
