@@ -97,6 +97,9 @@ jobs:
           FILES="imagebuilder/files"
           mkdir -p imagebuilder/keys
           mkdir -p "$FILES/etc/apk/repositories.d"
+          AURORA_PEM="$FILES/usr/share/aurora/feed/eamonxg.pem"
+          test -s "$AURORA_PEM" || { echo "ERROR: EamonXG PEM key not found"; exit 1; }
+          install -Dm644 "$AURORA_PEM" "$FILES/etc/apk/keys/eamonxg.pem"
 
           for DIR in "$FILES/etc/apk/keys" "$FILES/usr/share/aurora/feed"; do
             if [ -d "$DIR" ]; then
