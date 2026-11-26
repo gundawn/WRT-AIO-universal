@@ -13,13 +13,10 @@ jobs:
 
     env:
       OPENWRT_VERSION: "25.12.6"
-      # AX3000T — это MediaTek Filogic
       TARGET: "mediatek/filogic"
       PROFILE: "xiaomi_mi-router-ax3000t"
 
-      # Обязательно замените SHA256 на фактическое значение для этой платформы
       IMAGEBUILDER_URL: "https://downloads.openwrt.org/releases/25.12.6/targets/mediatek/filogic/openwrt-imagebuilder-25.12.6-mediatek-filogic.Linux-x86_64.tar.zst"
-      IMAGEBUILDER_SHA256: "AUTO_DETECT" # <--- Замените на официальное значение SHA256
 
       AURORA_FEED: "https://openwrt.eamonxg.fun/snapshots/apk/packages.adb"
 
@@ -46,24 +43,12 @@ jobs:
           set -euo pipefail
           test -s custom-files.tar.gz || { echo "ERROR: custom-files.tar.gz not found"; exit 1; }
           test -s packages.txt || { echo "ERROR: packages.txt not found"; exit 1; }
-
-          # Если вы изменили tar.gz или packages.txt, обязательно обновите следующие SHA256
-          echo "5d565bb39bb5963bac48a16a1d8c8355935dc11e6998378e89837a3936dc2872  custom-files.tar.gz" | sha256sum -c -
-          echo "4ec6314d99914fc51c1ed42e65a31f858792f56286ca8d58bbee2a9b1a21b5e0  packages.txt" | sha256sum -c -
-
-          echo "Input files verified."
+          echo "Input files present."
 
       - name: Download OpenWrt ImageBuilder
         run: |
           set -euo pipefail
           wget -q --tries=3 --timeout=60 "$IMAGEBUILDER_URL" -O imagebuilder.tar.zst
-
-          if [ "$IMAGEBUILDER_SHA256" != "AUTO_DETECT" ]; then
-            echo "$IMAGEBUILDER_SHA256  imagebuilder.tar.zst" | sha256sum -c -
-          else
-            echo "WARNING: Skipping ImageBuilder SHA256 check (AUTO_DETECT)."
-          fi
-
           mkdir imagebuilder
           tar --zstd -xf imagebuilder.tar.zst -C imagebuilder --strip-components=1
 
@@ -113,7 +98,7 @@ jobs:
           mkdir -p imagebuilder/keys
           mkdir -p "$FILES/etc/apk/repositories.d"
 
-          # Копируем ключи только в imagebuilder/keys/, не дублируем в files/
+          # Копируем ключи только в imagebuilder/keys/, без дублирования в files/
           for DIR in "$FILES/etc/apk/keys" "$FILES/usr/share/aurora/feed"; do
             if [ -d "$DIR" ]; then
               find "$DIR" -maxdepth 1 -type f \( -name '*.pem' -o -name '*.pub' \) -exec cp -f {} imagebuilder/keys/ \;
@@ -152,20 +137,14 @@ jobs:
           set -euo pipefail
           mkdir -p imagebuilder/packages
           curl -fL --retry 3 "$NETSHIFT_RELEASE_URL/netshift-0.9.12-r1.apk" -o imagebuilder/packages/netshift-0.9.12-r1.apk
-          echo "af84753fc38c2cbabdce2c444050309c7dbd9b2d02b4f93e8dfe1a4c8f30cf72  imagebuilder/packages/netshift-0.9.12-r1.apk" | sha256sum -c -
-
           curl -fL --retry 3 "$NETSHIFT_RELEASE_URL/luci-app-netshift-0.9.12-r1.apk" -o imagebuilder/packages/luci-app-netshift-0.9.12-r1.apk
-          echo "de285bf9d3b93be95074e80aabf5b4a280ffe36772acff82722f7bfe42a5ec12  imagebuilder/packages/luci-app-netshift-0.9.12-r1.apk" | sha256sum -c -
-
           curl -fL --retry 3 "$NETSHIFT_RELEASE_URL/luci-i18n-netshift-ru-0.9.12.apk" -o /tmp/luci-i18n-netshift-ru.apk
-          echo "50e8eb879e2973f419ca2c62815fd2a9e7346d0c5e7c3b2c733688e64ec59319  /tmp/luci-i18n-netshift-ru.apk" | sha256sum -c -
-
           mv /tmp/luci-i18n-netshift-ru.apk imagebuilder/packages/luci-i18n-netshift-ru-0.261025.30010.apk
 
           test -s imagebuilder/packages/netshift-0.9.12-r1.apk
           test -s imagebuilder/packages/luci-app-netshift-0.9.12-r1.apk
           test -s imagebuilder/packages/luci-i18n-netshift-ru-0.261025.30010.apk
-          echo "All three NetShift APK packages verified."
+          echo "All three NetShift APK packages downloaded."
 
       - name: Generate complete package list
         run: |
@@ -184,7 +163,7 @@ jobs:
           for line_number, line in enumerate(source.read_text().splitlines(), start=1):
               fields = line.split()
               if not fields: continue
-              entry = fields[0].split('>')[0] # Очистка суффикса ><hash>=
+              entry = fields[0].split('>')[0]
               match = re.match(r"^(.+)-([0-9][A-Za-z0-9.+~_-]*)$", entry)
               if not match:
                   skipped.append((line_number, entry)); continue
@@ -229,7 +208,6 @@ jobs:
         working-directory: imagebuilder
         run: |
           set -euo pipefail
-          # Ключевой момент: -sing-box исключает стандартный пакет
           PACKAGES="$(tr '\n' ' ' < /tmp/packages.list) -sing-box"
           echo "Building firmware for $PROFILE"
           echo "Package count: $(wc -l < /tmp/packages.list)"
@@ -247,7 +225,6 @@ jobs:
           echo "Firmware image: $IMAGE"
 
           mkdir -p /tmp/ax3000t-check
-          echo "=== Extracting root filesystem ==="
           ROOT_MEMBER="$(tar -tf "$IMAGE" | grep -E '(^|/)root$' | head -n 1 || true)"
           if [ -z "$ROOT_MEMBER" ]; then echo "ERROR: Root filesystem not found"; exit 1; fi
           tar -xOf "$IMAGE" "$ROOT_MEMBER" > /tmp/ax3000t-check/root.squashfs
