@@ -11,3 +11,4 @@ luci-i18n-dashboard-ru
 luci-theme-aurora
 luci-app-aurora-config
 luci-i18n-aurora-config-ru
+libnghttp2-14
