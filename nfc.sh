@@ -48,14 +48,19 @@ rm -rf "$WORK"
 mkdir -p "$WORK"
 
 log "Загрузка исходников xinfc..."
-wget -O "$ARCHIVE" "$URL" || die "Не удалось скачать архив."
 
-tar -xzf "$ARCHIVE" -C "$WORK" --strip-components=1 \
+wget -O "$ARCHIVE" "$URL" \
+    || die "Не удалось скачать архив."
+
+# BusyBox tar does not support --strip-components.
+tar -xzf "$ARCHIVE" -C "$WORK" \
     || die "Не удалось распаковать архив."
 
-SOURCE_BIN="$WORK/bin/xinfc-wsc-aarch64"
+# Locate binary regardless of archive root directory.
+SOURCE_BIN="$(find "$WORK" -type f -name 'xinfc-wsc-aarch64' | head -n 1)"
 
-[ -f "$SOURCE_BIN" ] || die "В архиве отсутствует xinfc-wsc-aarch64."
+[ -n "$SOURCE_BIN" ] && [ -f "$SOURCE_BIN" ] \
+    || die "В архиве отсутствует xinfc-wsc-aarch64."
 
 DOWNLOADED_SHA256="$(sha256sum "$SOURCE_BIN" | awk '{print $1}')"
 
@@ -71,8 +76,11 @@ mkdir -p "$DIR"
 BACKUP="$DIR/nfc_ndef_backup.bin"
 
 if [ ! -s "$BACKUP" ]; then
-    if [ -s "$WORK/nfc_ndef_backup.bin" ]; then
-        cp "$WORK/nfc_ndef_backup.bin" "$BACKUP"
+
+    BACKUP_SOURCE="$(find "$WORK" -type f -name 'nfc_ndef_backup.bin' | head -n 1)"
+
+    if [ -n "$BACKUP_SOURCE" ] && [ -s "$BACKUP_SOURCE" ]; then
+        cp "$BACKUP_SOURCE" "$BACKUP"
     elif [ -s /tmp/xinfc-src/nfc_ndef_backup.bin ]; then
         cp /tmp/xinfc-src/nfc_ndef_backup.bin "$BACKUP"
     else
@@ -81,6 +89,7 @@ if [ ! -s "$BACKUP" ]; then
 
     chmod 600 "$BACKUP"
     log "Исходная резервная копия NFC установлена."
+
 else
     log "Существующая резервная копия NFC сохранена без изменений."
 fi
@@ -109,8 +118,12 @@ log "Проверка I2C-шины 0, адреса 0x57..."
 
 I2C_SCAN="$(i2cdetect -y 0 2>/dev/null || true)"
 
+printf '%s\n' "$I2C_SCAN"
+
+# i2cdetect bus 0:
+# address 0x57 is located in row 50:, column 7 (field 9).
 printf '%s\n' "$I2C_SCAN" |
-    grep -Eq '(^|[[:space:]])57([[:space:]]|$)' \
+    awk '$1=="50:" && $9=="57" {found=1} END {exit !found}' \
     || die "NFC-чип по адресу 0x57 на I2C-шине 0 не обнаружен."
 
 log "NFC-чип обнаружен."
@@ -138,7 +151,10 @@ fail() {
     exit 1
 }
 
+# ------------------------------------------------------------
 # Prevent parallel execution
+# ------------------------------------------------------------
+
 mkdir -p /var/lock
 
 if ! mkdir "$LOCK" 2>/dev/null; then
@@ -147,7 +163,10 @@ fi
 
 trap 'rmdir "$LOCK" 2>/dev/null || true' EXIT INT TERM
 
-# Verify required files before any NFC write
+# ------------------------------------------------------------
+# Verify required files
+# ------------------------------------------------------------
+
 [ -x "$BIN" ] || fail "Не найден исполняемый xinfc-wsc."
 [ -s "$BACKUP" ] || fail "Нет исходной резервной копии NFC."
 
@@ -176,9 +195,11 @@ find_ap() {
     return 1
 }
 
-SEC0="$(find_ap radio0)" || fail "Не найден активный AP на radio0."
+# ------------------------------------------------------------
+# Read radio0 configuration
+# ------------------------------------------------------------
 
-SEC1="$(find_ap radio1 2>/dev/null || true)"
+SEC0="$(find_ap radio0)" || fail "Не найден активный AP на radio0."
 
 SSID0="$(uci -q get "wireless.$SEC0.ssid" 2>/dev/null || true)"
 KEY0="$(uci -q get "wireless.$SEC0.key" 2>/dev/null || true)"
@@ -192,36 +213,55 @@ SSID_BYTES="$(printf '%s' "$SSID0" | wc -c | tr -d ' ')"
 
 # ------------------------------------------------------------
 # Determine target encryption from password
+#
+# Non-empty password -> psk2
+# Empty password    -> none
 # ------------------------------------------------------------
 
 if [ -n "$KEY0" ]; then
+
     KEY_BYTES="$(printf '%s' "$KEY0" | wc -c | tr -d ' ')"
 
     if [ "$KEY_BYTES" -ge 8 ] && [ "$KEY_BYTES" -le 63 ]; then
+
         TARGET_ENC="psk2"
+
     elif [ "$KEY_BYTES" -eq 64 ] &&
-         printf '%s' "$KEY0" | grep -Eq '^[0-9A-Fa-f]{64}$'; then
+        printf '%s' "$KEY0" | grep -Eq '^[0-9A-Fa-f]{64}$'; then
+
         TARGET_ENC="psk2"
+
     else
+
         fail "Пароль radio0 не подходит для WPA2. Настройки не изменены."
+
     fi
+
 else
+
     TARGET_ENC="none"
+
 fi
 
 # ------------------------------------------------------------
 # Check radio1 matching conditions
+#
+# radio1 is modified only if SSID and password are identical
+# to radio0.
 # ------------------------------------------------------------
 
 MATCH_RADIO1=0
+SEC1="$(find_ap radio1 2>/dev/null || true)"
 
 if [ -n "$SEC1" ]; then
+
     SSID1="$(uci -q get "wireless.$SEC1.ssid" 2>/dev/null || true)"
     KEY1="$(uci -q get "wireless.$SEC1.key" 2>/dev/null || true)"
 
     if [ "$SSID1" = "$SSID0" ] && [ "$KEY1" = "$KEY0" ]; then
         MATCH_RADIO1=1
     fi
+
 fi
 
 # ------------------------------------------------------------
@@ -230,37 +270,67 @@ fi
 
 CHANGED=0
 
+# radio0:
+# Password present -> psk2
+# Password absent -> none
+
 if [ "$ENC0" != "$TARGET_ENC" ]; then
+
     uci -q set "wireless.$SEC0.encryption=$TARGET_ENC"
+
     CHANGED=1
-    log "radio0: режим encryption будет изменён на $TARGET_ENC."
+
+    log "radio0: encryption будет изменён на $TARGET_ENC."
+
 fi
 
+# radio1:
+# Only normalize when SSID and password match radio0.
+
 if [ "$MATCH_RADIO1" -eq 1 ]; then
+
     ENC1="$(uci -q get "wireless.$SEC1.encryption" 2>/dev/null || true)"
 
     if [ "$ENC1" != "$TARGET_ENC" ]; then
+
         uci -q set "wireless.$SEC1.encryption=$TARGET_ENC"
+
         CHANGED=1
-        log "radio1: SSID и пароль совпадают с radio0; режим будет изменён на $TARGET_ENC."
+
+        log "radio1: SSID и пароль совпадают с radio0; encryption будет изменён на $TARGET_ENC."
+
     fi
+
 else
+
     if [ -n "$SEC1" ]; then
         log "radio1: SSID или пароль отличаются; настройки radio1 не изменяются."
     fi
-fi
 
-# Commit only when necessary
-if [ "$CHANGED" -eq 1 ]; then
-    uci -q commit wireless || fail "Не удалось сохранить настройки wireless."
-    log "Изменения wireless сохранены. Перезагрузка Wi-Fi."
-
-    wifi reload || fail "Не удалось перезагрузить Wi-Fi."
-    exit 0
 fi
 
 # ------------------------------------------------------------
-# Calculate profile hash
+# Commit only when necessary
+# ------------------------------------------------------------
+
+if [ "$CHANGED" -eq 1 ]; then
+
+    uci -q commit wireless \
+        || fail "Не удалось сохранить настройки wireless."
+
+    log "Изменения wireless сохранены. Перезагрузка Wi-Fi."
+
+    wifi reload \
+        || fail "Не удалось перезагрузить Wi-Fi."
+
+    # NFC sync will run again after Wi-Fi reload,
+    # on the next cron invocation.
+    exit 0
+
+fi
+
+# ------------------------------------------------------------
+# Calculate NFC profile hash
 # ------------------------------------------------------------
 
 PROFILE_HASH="$(
@@ -283,12 +353,18 @@ log "Обновление NFC-профиля."
 cd "$DIR"
 
 if "$BIN" 0 0x57 "$SSID0" "$KEY0" "$TARGET_ENC"; then
+
     printf '%s\n' "$PROFILE_HASH" > "$STATE"
     chmod 600 "$STATE"
+
     log "NFC-профиль успешно обновлён."
+
 else
+
     fail "xinfc-wsc завершился с ошибкой. Хеш не обновлён."
+
 fi
+
 SYNC_EOF
 
 chmod 755 "$SYNC"
